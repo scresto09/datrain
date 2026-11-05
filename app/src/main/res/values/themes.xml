@@ -1,0 +1,4 @@
+<resources>
+    <style name="Theme.Datrain" parent="android:Theme.Material.Light.NoActionBar" />
+    <color name="launcher_background">#0B5FA5</color>
+</resources>
