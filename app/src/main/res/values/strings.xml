@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Datrain</string>
+    <string name="widget_description">Votre prochain train en un coup d\'œil</string>
+</resources>

@@ -1,0 +1,26 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- An old steam engine; its puff of smoke is the logo's red dot. -->
+    <path
+        android:fillColor="#FFFDF8FD"
+        android:fillAlpha="0.35"
+        android:pathData="M54,37a4,4 0 1,0 8,0a4,4 0 1,0 -8,0Z" />
+    <path
+        android:fillColor="#FFD32F2F"
+        android:pathData="M59,30a8,8 0 1,0 16,0a8,8 0 1,0 -16,0Z" />
+    <group
+        android:translateX="20"
+        android:translateY="40"
+        android:scaleX="0.6"
+        android:scaleY="0.6">
+        <path
+            android:fillColor="#FFFDF8FD"
+            android:pathData="M4 9h40v6H4zM8 15h32v31H8zM40 24h46a6 6 0 0 1 6 6v12a6 6 0 0 1-6 6H40zM58 24v-5a5 5 0 0 1 10 0v5zM76 24V12l-3-5h14l-3 5v12zM92 44l12 12H92zM2 46h98v5H2zM14,56a10,10 0 1,0 20,0a10,10 0 1,0 -20,0ZM40,56a10,10 0 1,0 20,0a10,10 0 1,0 -20,0ZM73,59a7,7 0 1,0 14,0a7,7 0 1,0 -14,0ZM92,33a4,4 0 1,0 8,0a4,4 0 1,0 -8,0Z" />
+        <path
+            android:fillColor="#FF1C1B1F"
+            android:pathData="M16.5 20h13a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5h-13a1.5 1.5 0 0 1-1.5-1.5v-8a1.5 1.5 0 0 1 1.5-1.5zM21.5,56a2.5,2.5 0 1,0 5.0,0a2.5,2.5 0 1,0 -5.0,0ZM47.5,56a2.5,2.5 0 1,0 5.0,0a2.5,2.5 0 1,0 -5.0,0ZM78.25,59a1.75,1.75 0 1,0 3.5,0a1.75,1.75 0 1,0 -3.5,0Z" />
+    </group>
+</vector>
