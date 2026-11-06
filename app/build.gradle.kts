@@ -22,8 +22,9 @@ android {
         applicationId = "com.scresto.datrain"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // A release build passes them from its tag: -PdatrainVersionName=1.2.0 -PdatrainVersionCode=10200
+        versionCode = providers.gradleProperty("datrainVersionCode").map { it.toInt() }.getOrElse(100)
+        versionName = providers.gradleProperty("datrainVersionName").getOrElse("0.1.0")
         // For a local test server: -PdatrainManifestUrl=http://localhost:8765/manifest.json
         val manifestUrl = providers.gradleProperty("datrainManifestUrl")
             .getOrElse("https://scresto09.github.io/datrain/manifest.json")
