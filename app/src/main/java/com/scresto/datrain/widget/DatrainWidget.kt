@@ -174,8 +174,12 @@ private fun RowScope.Next(next: WidgetContent.Next, openArea: GlanceModifier) {
             }
             next.newDeparture?.let { Text(" $it", style = big) }
             if (next.newDeparture == null && next.status != WidgetStatus.CANCELLED) Text(next.departure, style = big)
+            // By the time rather than at the end of the route, where long station names would cut it off.
+            next.platform?.takeIf { next.status != WidgetStatus.CANCELLED }?.let {
+                Text("  voie $it", style = TextStyle(color = WHITE, fontSize = 15.sp, fontWeight = FontWeight.Medium), maxLines = 1)
+            }
         }
-        Text(next.route + (next.platform?.let { " · voie $it" } ?: ""), style = TextStyle(color = SOFT, fontSize = 13.sp), maxLines = 1)
+        Text(next.route, style = TextStyle(color = SOFT, fontSize = 13.sp), maxLines = 1)
     }
     val (label, color) = when (next.status) {
         WidgetStatus.ON_TIME -> "À l'heure" to PILL_NEUTRAL

@@ -81,7 +81,7 @@ internal fun FavoriteCard(
     }
 }
 
-/** "Carbonne 07:14 → Saint-Agne 07:45", with a changed time struck through and followed by the estimate. */
+/** "Carbonne 07:14 · voie 2 → Saint-Agne 07:45", with a changed time struck through and followed by the estimate. */
 @Composable
 private fun stationsLine(itinerary: Itinerary): AnnotatedString {
     val first = itinerary.rides.first()
@@ -106,6 +106,7 @@ private fun stationsLine(itinerary: Itinerary): AnnotatedString {
         }
         append("${first.fromName} ")
         time(first.trip.departure, first.trip.departureDelayMinutes)
+        first.trip.platform?.let { append(" · voie $it") }
         append(" → ${last.toName} ")
         time(last.trip.arrival, last.trip.arrivalDelayMinutes)
     }

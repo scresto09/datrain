@@ -341,7 +341,9 @@ private fun OwnStop(label: String, row: StopRow, nowSeconds: Int) {
     if (detail == null) {
         Text("$label : ${row.name} · arrêt supprimé", color = MaterialTheme.colorScheme.error)
     } else {
-        Text(stopText("$label : ${row.name}", clock(row.planned), row.estimated?.let(::clock), delay, detail))
+        // Where the traveller boards, the platform is what they need on the way to the station.
+        val platform = row.platform?.takeIf { row.isBoarding && row.status != StopStatus.PASSED }?.let { " · voie $it" }.orEmpty()
+        Text(stopText("$label : ${row.name}", clock(row.planned), row.estimated?.let(::clock), delay, platform + detail))
     }
 }
 
@@ -401,7 +403,7 @@ private fun InfoPanel(
                 Modifier.fillMaxWidth().clickable(enabled = state.position != null, onClick = onTrainSelected),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                LiveInfo(state, status.progress)
+                LiveInfo(state, status.progress, rows)
             }
         }
         state.train?.serviceNotes()?.forEach { note ->
@@ -537,7 +539,7 @@ private fun StopTimeline(index: Int, count: Int, removed: Boolean, trainPosition
 }
 
 @Composable
-private fun LiveInfo(state: TrainMapState, progress: TrainProgress) {
+private fun LiveInfo(state: TrainMapState, progress: TrainProgress, rows: List<StopRow>) {
     val route = state.route ?: return
     val stops = state.stops
     fun name(i: Int) = route.stops.getOrNull(i)?.name.orEmpty()
@@ -568,6 +570,8 @@ private fun LiveInfo(state: TrainMapState, progress: TrainProgress) {
             Text("À l'heure")
         }
     }
+    rows.firstOrNull { it.isBoarding }?.takeIf { it.status == StopStatus.NEXT || it.status == StopStatus.AHEAD }
+        ?.let { OwnStop("Montée", it, state.nowSeconds) }
     if (state.position == null) {
         Text("Position inconnue sur cette portion : les coordonnées d'une gare manquent.")
     } else if (progress is TrainProgress.Between && route.segments.getOrNull(progress.from)?.isRealTrack == false) {

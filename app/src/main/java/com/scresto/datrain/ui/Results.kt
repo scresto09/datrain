@@ -94,6 +94,8 @@ internal fun ItineraryCard(
                                 else -> "${itinerary.changes} changements"
                             } + " · " + itinerary.rides.joinToString(", ") { if (it.isBus) "car" else it.trip.product },
                         )
+                        // The first train's platform, known shortly before departure.
+                        itinerary.rides.first().trip.platform?.takeUnless { itinerary.cancelled }?.let { append(" · voie $it") }
                         if (messages > 0) {
                             append(" · ")
                             withStyle(SpanStyle(color = messageColor, fontWeight = FontWeight.Medium)) { append(messageCount(messages)) }
