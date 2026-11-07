@@ -35,8 +35,13 @@ jobs:
           fi
           # Always increasing, as Android requires for an update: 1.2.0 -> 10200.
           code=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+          # F-Droid builds from app/build.gradle.kts, so the tag must match what is written there.
+          if ! grep -qx "        versionName = \"$version\"" app/build.gradle.kts \
+            || ! grep -qx "        versionCode = $code" app/build.gradle.kts; then
+            echo "app/build.gradle.kts must have versionName = \"$version\" and versionCode = $code" >&2
+            exit 1
+          fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "VERSION_CODE=$code" >> "$GITHUB_ENV"
 
       # The app signing key, the same as on Google Play, so that every store's APK can update the others.
       - name: Signing key
@@ -55,7 +60,7 @@ jobs:
           } > signing.properties
 
       - name: Build
-        run: ./gradlew --no-daemon :app:assembleRelease -PdatrainSigning=app -PdatrainVersionName="$VERSION" -PdatrainVersionCode="$VERSION_CODE"
+        run: ./gradlew --no-daemon :app:assembleRelease -PdatrainSigning=app
 
       - name: Remove the key
         if: always()

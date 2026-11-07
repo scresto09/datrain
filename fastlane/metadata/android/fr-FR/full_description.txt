@@ -1,0 +1,15 @@
+Il fait nuit, il fait froid, et le panneau affiche « Supprimé ». Datrain est né de là : savoir avant de sortir de chez soi.
+
+Ce que fait Datrain :
+• Recherche de trajets dans toute la France, Île-de-France comprise, avec correspondances.
+• Retards, suppressions, voies et messages de la SNCF en temps réel.
+• Position estimée du train sur une carte, avec tous ses arrêts.
+• Trains et trajets favoris, avec notifications quand ils changent.
+• Widget pour voir votre prochain train d'un coup d'œil.
+• Recherche par numéro de train.
+
+Ce qu'il ne fait pas : pas de vente de billets ni de prix. Les temps de correspondance sont des estimations.
+
+Projet personnel, sans compte, sans publicité. Horaires issus des données ouvertes de la SNCF et d'Île-de-France Mobilités. Application indépendante, sans lien avec ces organismes.
+
+Aide : https://scresto.pages-perso.free.fr/datrain/help.html

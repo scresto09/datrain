@@ -22,9 +22,9 @@ android {
         applicationId = "com.scresto.datrain"
         minSdk = 26
         targetSdk = 36
-        // A release build passes them from its tag: -PdatrainVersionName=1.2.0 -PdatrainVersionCode=10200
-        versionCode = providers.gradleProperty("datrainVersionCode").map { it.toInt() }.getOrElse(100)
-        versionName = providers.gradleProperty("datrainVersionName").getOrElse("0.1.0")
+        // Written here so that F-Droid sees each version; the tag must match: 1.2.0 -> v1.2.0, code 10200.
+        versionCode = 101
+        versionName = "0.1.1"
         // For a local test server: -PdatrainManifestUrl=http://localhost:8765/manifest.json
         val manifestUrl = providers.gradleProperty("datrainManifestUrl")
             .getOrElse("https://scresto09.github.io/datrain/manifest.json")
@@ -45,6 +45,8 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.findByName("release")
+            // Reproducible build: nothing that depends on the machine or the git checkout.
+            vcsInfo.include = false
         }
         // To measure speeds as a user would see them: -PdatrainMeasure=true
         if (providers.gradleProperty("datrainMeasure").isPresent) {
@@ -52,6 +54,11 @@ android {
                 isDebuggable = false
             }
         }
+    }
+    // Google's encrypted dependency list, refused by F-Droid.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
     testOptions {
         // android.util.Log does not exist in tests on the computer.
