@@ -45,13 +45,17 @@ internal fun FavoriteCard(
                 val day = rides?.let { " · ${favoriteDay(it.first().trip.departure.toLocalDate())}" }.orEmpty()
                 // The delay that matters: at arrival, or at departure when only that one is known.
                 val delay = rides?.takeUnless { Itinerary(it).cancelled }?.let {
-                    it.last().trip.arrivalDelayMinutes.takeIf { d -> d != 0 } ?: it.first().trip.departureDelayMinutes.takeIf { d -> d != 0 }
+                    val first = it.first().trip
+                    travellerDelay(
+                        first.departureDelayMinutes, it.last().trip.arrivalDelayMinutes,
+                        boarded = java.time.LocalDateTime.now(PARIS) >= first.estimatedDeparture,
+                    )
                 }
                 val red = delayColor()
                 Text(
                     buildAnnotatedString {
                         append(favorite.legs.joinToString(" + ") { "${it.product} ${it.number}" } + day)
-                        delay?.let { withStyle(SpanStyle(color = red)) { append(" · ${if (it > 0) "+" else ""}$it min") } }
+                        delay?.let { withStyle(SpanStyle(color = red)) { append("  ${if (it > 0) "+" else ""}$it min") } }
                     },
                     fontWeight = FontWeight.SemiBold,
                 )

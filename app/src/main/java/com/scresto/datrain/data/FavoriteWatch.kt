@@ -19,9 +19,13 @@ data class WatchState(
     val cancelled: Boolean = false,
     val platform: String? = null,
     val alerts: Set<String> = emptySet(),
-    /** The one full feed check of this run is done. */
+    /** The full feed has been read for this run at least once. */
     val fullChecked: Boolean = false,
+    /** When the full feed was last read for this run, ISO date-time; empty if never. */
+    val fullAt: String = "",
     val alertsDay: String = "",
+    /** When the alerts were last read for this run, ISO date-time; empty if never. */
+    val alertsAt: String = "",
     /** In a journey, the change before this train was already reported at risk. */
     val connectionWarned: Boolean = false,
 ) {
@@ -45,17 +49,20 @@ enum class LiveCheck { NONE, FULL_FEED, STATION_BOARD }
 
 object FavoriteWatch {
     private const val MIN_DELAY_CHANGE = 5
-    private val FULL_FEED_BEFORE: Duration = Duration.ofHours(6)
-    private val BOARD_BEFORE: Duration = Duration.ofHours(3)
     private val ALERTS_BEFORE: Duration = Duration.ofHours(48)
+    private val ALERTS_EVERY: Duration = Duration.ofMinutes(30)
+    private val FULL_FEED_EVERY: Duration = Duration.ofHours(1)
 
     /** The light station board covers about 3 hours, the heavy full feed about 6, and is used only once. */
     fun liveCheck(state: WatchState, now: LocalDateTime): LiveCheck {
         val departure = state.departureTime
         return when {
             state.cancelled || now >= state.arrivalTime.plusMinutes(state.delayMinutes.toLong()) -> LiveCheck.NONE
-            now >= departure.minus(BOARD_BEFORE) -> LiveCheck.STATION_BOARD
-            now >= departure.minus(FULL_FEED_BEFORE) && !state.fullChecked -> LiveCheck.FULL_FEED
+            now >= departure.minus(Board.HORIZON) -> LiveCheck.STATION_BOARD
+            // Before boards can show the train, the full feed once an hour: a cancellation decided hours
+            // ahead is seen within the hour, not only when the boards take over.
+            now >= departure.minus(LiveFeed.HORIZON) && (state.fullAt.isEmpty() || now >= LocalDateTime.parse(state.fullAt).plus(FULL_FEED_EVERY)) ->
+                LiveCheck.FULL_FEED
             else -> LiveCheck.NONE
         }
     }
@@ -63,17 +70,6 @@ object FavoriteWatch {
     /** Remembered state of each train of [favorite], under the keys the background check uses. */
     fun legKeys(favorite: FavoriteTrain): List<String> =
         if (favorite.isJourney) favorite.legs.indices.map { "${favorite.key}#$it" } else listOf(favorite.key)
-
-    /**
-     * Where to look for the run to watch: now, or just before the last train's planned arrival
-     * while it is known to be late and not there yet, so that the late run stays watched.
-     */
-    fun watchedFrom(favorite: FavoriteTrain, states: Map<String, WatchState>, now: LocalDateTime): LocalDateTime {
-        val last = states[legKeys(favorite).last()] ?: return now
-        val stillLate = !last.cancelled && last.arrivalTime <= now &&
-            last.arrivalTime.plusMinutes(last.delayMinutes.toLong()) > now
-        return if (stillLate) last.arrivalTime.minusMinutes(1) else now
-    }
 
     /** Minutes to change from [before] to [after], delays included, if a delay has made it risky. */
     fun connectionAtRisk(before: WatchState, after: WatchState, tightMinutes: Long): Long? {
@@ -86,8 +82,15 @@ object FavoriteWatch {
         return estimated.takeIf { it < planned && it < tightMinutes }
     }
 
-    fun needsAlerts(state: WatchState, now: LocalDateTime): Boolean =
-        state.alertsDay != now.toLocalDate().toString() && now >= state.departureTime.minus(ALERTS_BEFORE)
+    /**
+     * Messages are read once a day within two days of the run, and every half hour from the time boards
+     * show the train until it arrives: an incident posted on the morning itself is seen before leaving.
+     */
+    fun needsAlerts(state: WatchState, now: LocalDateTime): Boolean {
+        val close = now >= state.departureTime.minus(Board.HORIZON) && now < state.arrivalTime.plusMinutes(state.delayMinutes.toLong())
+        if (close) return state.alertsAt.isEmpty() || now >= LocalDateTime.parse(state.alertsAt).plus(ALERTS_EVERY)
+        return state.alertsDay != now.toLocalDate().toString() && now >= state.departureTime.minus(ALERTS_BEFORE)
+    }
 
     /** Real-time knowledge is kept as long as this is still the same run. */
     fun stateFor(ride: RideLeg, old: WatchState?): WatchState {
@@ -104,8 +107,10 @@ object FavoriteWatch {
         // A first look only sets the reference, but a train already cancelled must be told.
         if (old == null) return if (new.cancelled) listOf(FavoriteChange.Cancelled) else emptyList()
         if (old.date != new.date) {
-            // A later run is expected once the previous one is over, not before.
-            return if (!old.cancelled && old.arrivalTime > now) listOf(FavoriteChange.Removed(old.departureTime)) else emptyList()
+            // A later run is expected once the previous one is over, not before. Going back to an earlier run
+            // (one still running late) says nothing about the later one.
+            val removed = !old.cancelled && old.arrivalTime > now && new.departureTime > old.departureTime
+            return if (removed) listOf(FavoriteChange.Removed(old.departureTime)) else emptyList()
         }
         if (new.cancelled) return if (old.cancelled) emptyList() else listOf(FavoriteChange.Cancelled)
         return buildList {
@@ -159,15 +164,17 @@ object FavoriteWatch {
     }
 
     /** [boarding]: read at the traveller's departure station, otherwise at their arrival station. */
-    fun withBoard(state: WatchState, board: Board, ride: RideLeg, boarding: Boolean, now: java.time.OffsetDateTime): WatchState {
-        if (now >= board.staleAfter || board.day != ride.trip.serviceDate) return state
-        val numbers = TimetableMerger.numbers(ride.trip.number)
-        val midnight = ride.trip.serviceDate.atStartOfDay()
-        val planned = Duration.between(midnight, if (boarding) ride.trip.departure else ride.trip.arrival).seconds.toInt()
-        val candidates = board.passages.filter { it.number in numbers }
-        val passage = candidates.firstOrNull { (if (boarding) it.departureSeconds else it.arrivalSeconds) == planned }
-            ?: candidates.singleOrNull()
-            ?: return state
+    /**
+     * Null when the board cannot tell: out of date, another day, or without the train. After midnight,
+     * a train of the day before is on the new day's board, its times counted from that new midnight.
+     */
+    fun withBoard(state: WatchState, board: Board, ride: RideLeg, boarding: Boolean, now: java.time.OffsetDateTime): WatchState? {
+        val trip = ride.trip
+        val planned = Duration.between(trip.serviceDate.atStartOfDay(), if (boarding) trip.departure else trip.arrival).seconds.toInt()
+        val passage = BoardPatch.find(
+            board, trip.number, trip.serviceDate,
+            departure = planned.takeIf { boarding }, arrival = planned.takeUnless { boarding }, now = now,
+        ) ?: return null
         return state.copy(
             cancelled = passage.cancelled,
             delayMinutes = (if (boarding) passage.departureDelaySeconds else passage.arrivalDelaySeconds) / 60,
@@ -190,10 +197,41 @@ class FavoriteWatchStore(context: Context) {
     }
 
     fun save(states: Map<String, WatchState>) {
-        preferences.edit().putString(KEY, json.encodeToString(states)).apply()
+        preferences.edit().putString(KEY, json.encodeToString(states)).putLong(CHECKED_AT, System.currentTimeMillis()).apply()
+    }
+
+    /** When the background check last ran, in milliseconds; 0 if never. */
+    fun checkedAt(): Long = preferences.getLong(CHECKED_AT, 0)
+
+    /** Runs already looked for after their planned arrival, as "favorite key@departure". */
+    fun lateChecked(): Set<String> = preferences.getStringSet(LATE_CHECKED, emptySet()).orEmpty()
+
+    fun saveLateChecked(ids: Set<String>) {
+        preferences.edit().putStringSet(LATE_CHECKED, ids).apply()
+    }
+
+    /** A refresh asked from the widget, so that it can show at once that it is on its way. */
+    fun markRefreshAsked() {
+        preferences.edit().putLong(REFRESH_ASKED_AT, System.currentTimeMillis()).apply()
+    }
+
+    /**
+     * Asked since the last check, and recently: past that, the request is taken as lost (no network).
+     * Shown for at least a second after the tap, even when the check is over sooner.
+     */
+    fun isRefreshing(): Boolean {
+        val asked = preferences.getLong(REFRESH_ASKED_AT, 0)
+        val since = System.currentTimeMillis() - asked
+        return (asked > checkedAt() || since < REFRESH_SHOWN_MILLIS) && since < REFRESH_PATIENCE_MILLIS
     }
 
     private companion object {
         const val KEY = "states"
+        const val CHECKED_AT = "checkedAt"
+        // Renamed when marks also went on runs still going: those old marks are dropped.
+        const val LATE_CHECKED = "lateRunsDone"
+        const val REFRESH_ASKED_AT = "refreshAskedAt"
+        const val REFRESH_PATIENCE_MILLIS = 2 * 60_000L
+        const val REFRESH_SHOWN_MILLIS = 1_000L
     }
 }

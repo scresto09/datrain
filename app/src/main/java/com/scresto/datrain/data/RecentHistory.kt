@@ -128,6 +128,8 @@ data class RecentHistory(
     val numbers: List<String> = emptyList(),
     val favorites: List<FavoriteTrain> = emptyList(),
     val notifications: Boolean = true,
+    /** The time is typed on the keyboard rather than chosen on the dial. */
+    val typeTime: Boolean = false,
 ) {
     fun adding(from: Station, to: Station): RecentHistory {
         val start = RecentStation(from.name, from.uic)

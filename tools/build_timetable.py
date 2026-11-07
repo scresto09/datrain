@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Build the compact timetable files that the app downloads.
 
-Usage: build_timetable.py --sncf DIR --idfm DIR --out DIR --base-url URL
+Usage: build_timetable.py --sncf DIR --idfm DIR [--idfm-codes DIR] --out DIR --base-url URL
 
 Each source gives one file under its own licence: sncf.bin.gz (ODbL) and idfm.bin.gz
 (Licence Mobilités). The two are never mixed here: the app combines them on the phone.
 Kept: SNCF trains and coaches, plus IDFM route_type 2 (RER, Transilien, TER).
+
+The IDFM timetables give no UIC codes, which real time uses to name stations. --idfm-codes points to
+two files of IDFM's stop referential (Licence Ouverte): arrets.csv (arrid;zdaid) and transporteur.csv
+(arrid;privatecode), where SNCF's private code is the 7-digit UIC code.
 
 The app reads it in app/src/main/java/com/scresto/datrain/data/RailTimetable.kt.
 File format, gzip-compressed and big-endian: "DTRN", version:int, first day:int (yyyymmdd), days:short,
@@ -144,12 +148,60 @@ def load_sncf(b, folder):
     return kept
 
 
-def load_idfm(b, folder):
+def uic_check_digit(code7):
+    """The 8th digit of a French station code: Luhn on the five digits after the country code 87."""
+    total = 0
+    for i, c in enumerate(reversed(code7[2:])):
+        d = int(c)
+        if i % 2 == 0:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return (10 - total % 10) % 10
+
+
+def load_uic_codes(folder):
+    """Stop zone (ZdA) id -> 8-digit UIC code, from IDFM's referential."""
+    if not folder:
+        return {}
+
+    def table(name):
+        with open(os.path.join(folder, name), encoding="utf-8-sig", newline="") as f:
+            return list(csv.DictReader(f, delimiter=";"))
+
+    zone_of = {r["arrid"]: r["zdaid"] for r in table("arrets.csv")}
+    codes = {}
+    for r in table("transporteur.csv"):
+        code = r["privatecode"]
+        if re.fullmatch(r"87\d{5}", code) and r["arrid"] in zone_of:
+            codes.setdefault(zone_of[r["arrid"]], int(code) * 10 + uic_check_digit(code))
+    return codes
+
+
+def load_idfm(b, folder, codes_folder=None):
     agencies = {r["agency_id"]: r["agency_name"] for r in rows(folder, "agency.txt")}
     route_info = {r["route_id"]: r for r in rows(folder, "routes.txt") if r["route_type"] == "2"}
     trips = {r["trip_id"]: r for r in rows(folder, "trips.txt") if r["route_id"] in route_info}
     active = idfm_active_days(folder)
     stops = {r["stop_id"]: r for r in rows(folder, "stops.txt")}
+    codes = load_uic_codes(codes_folder)
+    # A station is a ZdC whose ZdA children ("IDFM:monomodalStopPlace:<zda>") carry the codes, or a ZdA itself.
+    zones = defaultdict(list)
+    for stop_id, r in stops.items():
+        m = re.search(r"monomodalStopPlace:(\d+)$", stop_id)
+        if m:
+            zones[stop_id].append(m.group(1))
+            if r["parent_station"]:
+                zones[r["parent_station"]].append(m.group(1))
+
+    def uic(area):
+        # Several zones (Montparnasse and Vaugirard): the one named like the station comes first.
+        name = stops.get(area, {}).get("stop_name")
+        found = [z for z in zones.get(area, ()) if z in codes]
+        found.sort(key=lambda z: stops.get(f"IDFM:monomodalStopPlace:{z}", {}).get("stop_name") != name)
+        return codes[found[0]] if found else 0
+
     times = stop_rows(folder, trips)
     kept = []
     for trip_id, points in times.items():
@@ -166,9 +218,12 @@ def load_idfm(b, folder):
             platform = stops[stop]
             area = platform["parent_station"] or stop
             source = stops.get(area, platform)
-            index = b.station(area, source["stop_name"], float(source["stop_lat"]), float(source["stop_lon"]), 0)
+            index = b.station(area, source["stop_name"], float(source["stop_lat"]), float(source["stop_lon"]), uic(area))
             out.append((index, arr, dep, board, alight))
         kept.append((t["trip_short_name"], label, MODE_SUBURBAN, days, out))
+    if codes:
+        missing = sorted({name for name, _, _, code in b.stations if code == 0})
+        print(f"idfm: {len(b.stations) - len(missing)} stations with a UIC code, {len(missing)} without: {', '.join(missing)}")
 
     # Official walking times between two stations of the network.
     for r in rows(folder, "transfers.txt"):
@@ -277,6 +332,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sncf", required=True)
     parser.add_argument("--idfm", required=True)
+    parser.add_argument("--idfm-codes", help="folder with IDFM's arrets.csv and transporteur.csv")
     parser.add_argument("--out", required=True)
     parser.add_argument("--base-url", required=True)
     args = parser.parse_args()
@@ -284,7 +340,7 @@ def main():
 
     sources = (
         ("sncf", args.sncf, load_sncf, MIN_SNCF_TRIPS),
-        ("idfm", args.idfm, load_idfm, MIN_IDFM_TRIPS),
+        ("idfm", args.idfm, lambda b, folder: load_idfm(b, folder, args.idfm_codes), MIN_IDFM_TRIPS),
     )
     manifest = {"format": MANIFEST_FORMAT, "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"), "files": {}}
     for name, folder, load, minimum in sources:

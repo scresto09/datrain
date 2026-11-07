@@ -30,6 +30,8 @@ data class LiveTrain(
     val product: String? = null,
     val destination: String? = null,
     val origin: String? = null,
+    /** When the source last updated this train, in epoch seconds; 0 if unknown. */
+    val updatedAt: Long = 0,
 ) {
     /** A removed stop is not served: the train goes straight to the next one. */
     val activeStops: List<LiveStop> get() = stops.filterNot { it.removed }
@@ -54,13 +56,46 @@ data class LiveTrain(
 }
 
 data class LiveFeed(val collectedAt: OffsetDateTime, val staleAfter: OffsetDateTime, val trains: List<LiveTrain>) {
+
+    /**
+     * After midnight, the source copies a train still running into the new day, its times counted from that
+     * new midnight, and updates only the copy. The most recently updated of the two is the one that counts.
+     */
     fun find(trip: Trip): LiveTrain? {
         val numbers = TimetableMerger.numbers(trip.number)
-        val candidates = trains.filter { it.number in numbers && it.serviceDate == trip.serviceDate }
         val seconds = java.time.Duration.between(trip.serviceDate.atStartOfDay(), trip.departure).seconds.toInt()
-        return candidates.firstOrNull { train -> train.stops.any { it.departureSeconds == seconds } }
-            // Time differs from the planned one: the number is enough if unambiguous.
-            ?: candidates.singleOrNull()
+        // Leftover entries are marked removed: they say nothing about when the train runs.
+        fun matching(candidates: List<LiveTrain>, departure: Int): LiveTrain? =
+            candidates.firstOrNull { train -> train.stops.any { !it.removed && it.departureSeconds == departure } }
+                // Time differs from the planned one: the number is enough if unambiguous.
+                ?: candidates.singleOrNull()
+        val ofNumber = trains.filter { it.number in numbers }
+        // A copy of the day before is never this day's train, even with the same number and time.
+        val same = matching(ofNumber.filter { it.serviceDate == trip.serviceDate && !it.isCopy }, seconds)
+        val copy = matching(ofNumber.filter { it.serviceDate == trip.serviceDate.plusDays(1) && it.isCopy }, seconds - DAY)
+            ?.backTo(trip.serviceDate)
+        return listOfNotNull(same, copy).maxByOrNull { it.updatedAt }
+    }
+
+    /**
+     * The copy, in the day it left, its times counted from that day. Its leftover entries of the old day,
+     * marked removed with times near the old midnight, are dropped: real ones are close to the new midnight.
+     */
+    private fun LiveTrain.backTo(day: java.time.LocalDate): LiveTrain = copy(
+        serviceDate = day,
+        stops = stops
+            .filterNot { it.removed && (it.arrivalSeconds ?: it.departureSeconds ?: 0) >= DAY / 2 }
+            .map { it.copy(arrivalSeconds = it.arrivalSeconds?.plus(DAY), departureSeconds = it.departureSeconds?.plus(DAY)) },
+    )
+
+    /** A train of the day before copied into this day: it has times before this day's midnight. */
+    private val LiveTrain.isCopy: Boolean
+        get() = stops.any { !it.removed && (it.departureSeconds ?: it.arrivalSeconds ?: 0) < 0 }
+
+    companion object {
+        /** How far ahead the live feed knows trains, and how long it keeps them: about 6 hours. */
+        val HORIZON: java.time.Duration = java.time.Duration.ofHours(6)
+        private const val DAY = 86400
     }
 }
 

@@ -2,6 +2,7 @@ package com.scresto.datrain.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDate
@@ -18,11 +19,12 @@ class FavoriteWatchTest {
         "A", "B", isBus = false,
     )
 
-    @Test fun `no network far from the departure, one full check, then station boards`() {
+    @Test fun `no network far from the departure, the full feed hourly, then station boards`() {
         assertEquals(LiveCheck.NONE, FavoriteWatch.liveCheck(state, at(8)))
         assertEquals(LiveCheck.FULL_FEED, FavoriteWatch.liveCheck(state, at(9)))
-        assertEquals(LiveCheck.NONE, FavoriteWatch.liveCheck(state.copy(fullChecked = true), at(10)))
-        assertEquals(LiveCheck.STATION_BOARD, FavoriteWatch.liveCheck(state.copy(fullChecked = true), at(12)))
+        assertEquals(LiveCheck.NONE, FavoriteWatch.liveCheck(state.copy(fullAt = "2026-11-05T09:00"), at(9, 45)))
+        assertEquals(LiveCheck.FULL_FEED, FavoriteWatch.liveCheck(state.copy(fullAt = "2026-11-05T09:00"), at(10)))
+        assertEquals(LiveCheck.STATION_BOARD, FavoriteWatch.liveCheck(state.copy(fullAt = "2026-11-05T11:30"), at(12)))
         assertEquals(LiveCheck.STATION_BOARD, FavoriteWatch.liveCheck(state, at(15, 30)))
     }
 
@@ -38,9 +40,21 @@ class FavoriteWatchTest {
         assertFalse(FavoriteWatch.needsAlerts(state.copy(alertsDay = "2026-11-05"), at(9)))
     }
 
+    @Test fun `close to the departure, alerts are read every half hour until arrival`() {
+        val read = state.copy(alertsDay = "2026-11-05", alertsAt = "2026-11-05T12:10")
+        assertFalse(FavoriteWatch.needsAlerts(read, at(12, 30)))
+        assertTrue(FavoriteWatch.needsAlerts(read, at(12, 40)))
+        assertFalse(FavoriteWatch.needsAlerts(read.copy(alertsAt = "2026-11-05T15:30"), at(16, 5)))
+    }
+
     @Test fun `the first look at a favorite only tells a cancellation`() {
         assertTrue(FavoriteWatch.changes(null, state.copy(delayMinutes = 20), at(9)).isEmpty())
         assertEquals(listOf(FavoriteChange.Cancelled), FavoriteWatch.changes(null, state.copy(cancelled = true), at(9)))
+    }
+
+    @Test fun `going back to an earlier run still running late announces nothing`() {
+        val tomorrow = WatchState("2026-11-06T15:00", "2026-11-06T16:00")
+        assertTrue(FavoriteWatch.changes(tomorrow, state, at(17)).isEmpty())
     }
 
     @Test fun `a run gone from the timetables is announced`() {
@@ -117,21 +131,26 @@ class FavoriteWatchTest {
     private val now = OffsetDateTime.now(PARIS)
 
     @Test fun `a station board gives delay, platform and cancellation`() {
-        val updated = FavoriteWatch.withBoard(state, board(passage()), ride, boarding = true, now)
+        val updated = FavoriteWatch.withBoard(state, board(passage()), ride, boarding = true, now)!!
         assertEquals(10, updated.delayMinutes)
         assertEquals("4", updated.platform)
-        assertTrue(FavoriteWatch.withBoard(state, board(passage(cancelled = true)), ride, true, now).cancelled)
+        assertTrue(FavoriteWatch.withBoard(state, board(passage(cancelled = true)), ride, true, now)!!.cancelled)
     }
 
-    @Test fun `a station board without the train or out of date changes nothing`() {
-        assertEquals(state, FavoriteWatch.withBoard(state, board(passage("7")), ride, true, now))
+    @Test fun `a station board without the train or out of date cannot tell`() {
+        assertNull(FavoriteWatch.withBoard(state, board(passage("7")), ride, true, now))
         val stale = board(passage(), stale = OffsetDateTime.now(PARIS).minusHours(1))
-        assertEquals(state, FavoriteWatch.withBoard(state, stale, ride, true, now))
+        assertNull(FavoriteWatch.withBoard(state, stale, ride, true, now))
+    }
+
+    @Test fun `after midnight the next day's board still has the train`() {
+        val nextDay = Board(day.plusDays(1), OffsetDateTime.now(PARIS).plusMinutes(5), listOf(passage(arrival = 57600 - 86400, delay = 420)))
+        assertEquals(7, FavoriteWatch.withBoard(state, nextDay, ride, boarding = false, now)!!.delayMinutes)
     }
 
     @Test fun `among two runs of a number the board picks the right time`() {
         val other = passage(departure = 10000, delay = 1200)
-        val updated = FavoriteWatch.withBoard(state, board(other, passage()), ride, true, now)
+        val updated = FavoriteWatch.withBoard(state, board(other, passage()), ride, true, now)!!
         assertEquals(10, updated.delayMinutes)
     }
 

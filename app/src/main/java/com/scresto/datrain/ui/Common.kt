@@ -69,7 +69,7 @@ internal fun stopText(name: String, planned: String, estimated: String?, delayMi
             withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { append(planned) }
             append(" ")
             withStyle(SpanStyle(color = red, fontWeight = FontWeight.SemiBold)) {
-                append("$estimated (${if (delayMinutes > 0) "+" else ""}$delayMinutes min)")
+                append("$estimated (${if (delayMinutes > 0) "+" else ""}$delayMinutes min)")
             }
         }
         append(after)
@@ -77,7 +77,7 @@ internal fun stopText(name: String, planned: String, estimated: String?, delayMi
 }
 
 internal fun formatMinutesShort(minutes: Long): String {
-    if (minutes < 60) return "$minutes min"
+    if (minutes < 60) return "$minutes min"
     val rest = minutes % 60
     return if (rest == 0L) "${minutes / 60} h" else "${minutes / 60} h ${rest.toString().padStart(2, '0')}"
 }
@@ -107,11 +107,18 @@ internal fun FavoriteStar(selected: Boolean, onClick: () -> Unit) {
 internal fun realtimeLabel(trip: Trip, showCancelled: Boolean): String? {
     if (trip.cancelled) return if (showCancelled) "Supprimé" else null
     val parts = buildList {
-        if (trip.departureDelayMinutes > 0) add("Départ +${trip.departureDelayMinutes} min")
-        if (trip.arrivalDelayMinutes > 0) add("Arrivée +${trip.arrivalDelayMinutes} min")
+        if (trip.departureDelayMinutes > 0) add("Départ +${trip.departureDelayMinutes} min")
+        if (trip.arrivalDelayMinutes > 0) add("Arrivée +${trip.arrivalDelayMinutes} min")
     }
     return parts.joinToString(" · ").ifEmpty { null }
 }
+
+/**
+ * The delay that matters to the traveller: before boarding, at their departure (or else at arrival);
+ * once on board, only at their arrival. The same rule on every screen.
+ */
+internal fun travellerDelay(departureDelay: Int, arrivalDelay: Int, boarded: Boolean): Int? =
+    if (boarded) arrivalDelay.takeIf { it != 0 } else (departureDelay.takeIf { it != 0 } ?: arrivalDelay.takeIf { it != 0 })
 
 internal fun formatDay(date: LocalDate): String =
     date.format(if (date.year == LocalDate.now(PARIS).year) THIS_YEAR_DATE_FORMAT else DATE_FORMAT)
@@ -119,5 +126,5 @@ internal fun formatDay(date: LocalDate): String =
 internal fun formatDuration(duration: Duration): String {
     val hours = duration.toHours()
     val minutes = duration.toMinutes() % 60
-    return if (hours > 0) "${hours}h${minutes.toString().padStart(2, '0')}" else "$minutes min"
+    return if (hours > 0) "${hours}h${minutes.toString().padStart(2, '0')}" else "$minutes min"
 }

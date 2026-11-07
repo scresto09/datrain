@@ -6,13 +6,14 @@ Each file is published under the licence of its source. The two are never mixed 
 |---|---|---|
 | `sncf.bin.gz` | [Horaires SNCF](https://data.sncf.com/explore/dataset/horaires-sncf/), SNCF Voyageurs | [ODbL 1.0](ODbL-1.0.txt) |
 | `idfm.bin.gz` | [Horaires prévus sur les lignes de transport en commun d'Île-de-France (GTFS Datahub)](https://data.iledefrance-mobilites.fr/explore/dataset/offre-horaires-tc-gtfs-idfm/), Île-de-France Mobilités | [Licence Mobilités](https://cloud.fabmob.io/s/eYWWJBdM3fQiFNm) |
+| `idfm.bin.gz` (station UIC codes) | [Référentiel des arrêts : Arrêts](https://data.iledefrance-mobilites.fr/explore/dataset/arrets/) and [Arrêts transporteur](https://data.iledefrance-mobilites.fr/explore/dataset/arrets-transporteur/), Île-de-France Mobilités | [Licence Ouverte 2.0](https://www.etalab.gouv.fr/licence-ouverte-open-licence/) |
 
 ## Changes
 
 `tools/build_timetable.py` does all of them:
 
 - `sncf.bin.gz`: all trains and coaches, with stops grouped by station.
-- `idfm.bin.gz`: `route_type` 2 lines only (RER, Transilien, TER), with stops grouped by station and official walking times between stations.
+- `idfm.bin.gz`: `route_type` 2 lines only (RER, Transilien, TER), with stops grouped by station and official walking times between stations. Each station gets the UIC code of its SNCF stop from the referential, with its check digit added.
 - Both: converted to the compact format described at the top of `tools/build_timetable.py`.
 
 `corrections.json` links two names of one station when they cannot be matched automatically.

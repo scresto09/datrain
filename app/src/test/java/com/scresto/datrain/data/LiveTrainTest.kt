@@ -23,6 +23,28 @@ class LiveTrainTest {
 
     private fun progressAt(now: Int, list: List<LiveStop> = stops) = ProgressCalculator.compute(list, now)
 
+    @Test fun `after midnight the newer copy of a train in the next day wins`() {
+        val trip = Trip("133669", "TRANSILIEN", "Versailles", day, day.atTime(23, 56), day.plusDays(1).atTime(0, 34), fromKey = "A", toKey = "C")
+        val old = LiveTrain("133669", "133669", day, false, true, listOf(stop("A", d = 86160, rd = 180), stop("C", a = 88440, ra = 180)), updatedAt = 100)
+        val copy = LiveTrain(
+            "133669/2", "133669", day.plusDays(1), false, true,
+            listOf(
+                stop("A", d = -240, rd = 360),
+                LiveStop("A", null, 86160, removed = true),
+                stop("C", a = 2040, ra = 420),
+            ),
+            updatedAt = 200,
+        )
+        val found = LiveFeed(java.time.OffsetDateTime.now(), java.time.OffsetDateTime.now(), listOf(old, copy)).find(trip)!!
+        assertEquals(day, found.serviceDate)
+        assertEquals(listOf(86160, null), found.stops.map { it.departureSeconds })
+        assertEquals(420, found.stops.last().arrivalDelaySeconds)
+
+        // Tonight's train, same number and time, is not last night's copy.
+        val tonight = trip.copy(serviceDate = day.plusDays(1), departure = day.plusDays(1).atTime(23, 56), arrival = day.plusDays(2).atTime(0, 34))
+        assertNull(LiveFeed(java.time.OffsetDateTime.now(), java.time.OffsetDateTime.now(), listOf(old, copy)).find(tonight))
+    }
+
     @Test fun `before the delayed departure the train has not started`() {
         assertEquals(TrainProgress.NotStarted, progressAt(1050))
     }

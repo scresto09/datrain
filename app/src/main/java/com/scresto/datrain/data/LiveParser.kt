@@ -30,6 +30,7 @@ object LiveParser {
                         product = train.p,
                         destination = train.dn,
                         origin = train.on,
+                        updatedAt = train.t,
                         stops = train.ar.map {
                             LiveStop(
                                 uic = it.s,
@@ -172,7 +173,12 @@ data class Passage(
     val cancelled: Boolean,
 )
 
-data class Board(val day: LocalDate, val staleAfter: OffsetDateTime, val passages: List<Passage>)
+data class Board(val day: LocalDate, val staleAfter: OffsetDateTime, val passages: List<Passage>) {
+    companion object {
+        /** How far ahead a station board shows trains: about 3 hours. */
+        val HORIZON: java.time.Duration = java.time.Duration.ofHours(3)
+    }
+}
 
 @Serializable
 private data class BoardDto(
@@ -209,6 +215,7 @@ private data class TrainDto(
     val on: String? = null,
     val an: Int = 0,
     val nm: Int = 0,
+    val t: Long = 0,
     val ar: List<StopDto> = emptyList(),
 )
 

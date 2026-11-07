@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -38,6 +39,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimeInput
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
@@ -155,7 +157,12 @@ internal fun SearchForm(state: UiState, vm: SearchViewModel) {
         }
     }
     if (pickTime) {
-        TimeDialog(state.time, state.arriveBy, onDismiss = { pickTime = false }) { time, arriveBy ->
+        TimeDialog(
+            state.time, state.arriveBy,
+            typing = state.recent.typeTime,
+            onTyping = vm::setTypeTime,
+            onDismiss = { pickTime = false },
+        ) { time, arriveBy ->
             vm.setTime(time, arriveBy)
             pickTime = false
         }
@@ -390,6 +397,8 @@ internal fun DateDialog(date: LocalDate, onDismiss: () -> Unit, onPicked: (Local
 private fun TimeDialog(
     time: LocalTime,
     arriveBy: Boolean,
+    typing: Boolean,
+    onTyping: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onPicked: (LocalTime, Boolean) -> Unit,
 ) {
@@ -397,10 +406,30 @@ private fun TimeDialog(
     var arrival by rememberSaveable { mutableStateOf(arriveBy) }
     AlertDialog(
         onDismissRequest = onDismiss,
+        // As in Android's own dialog: the dial or keyboard switch on the left, the usual pair on the right.
         confirmButton = {
-            TextButton(onClick = { onPicked(LocalTime.of(pickerState.hour, pickerState.minute), arrival) }) { Text("OK") }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                // Remembered across restarts: whoever types the time keeps typing it.
+                IconButton(onClick = { onTyping(!typing) }) {
+                    Icon(
+                        painterResource(if (typing) R.drawable.ic_schedule else R.drawable.ic_keyboard),
+                        contentDescription = if (typing) "Choisir sur le cadran" else "Saisir au clavier",
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        val now = LocalTime.now(PARIS)
+                        pickerState.hour = now.hour
+                        pickerState.minute = now.minute
+                    },
+                ) {
+                    Icon(painterResource(R.drawable.ic_update), contentDescription = "Heure actuelle")
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onDismiss) { Text("Annuler") }
+                TextButton(onClick = { onPicked(LocalTime.of(pickerState.hour, pickerState.minute), arrival) }) { Text("OK") }
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -412,7 +441,7 @@ private fun TimeDialog(
                         ) { Text(label) }
                     }
                 }
-                TimePicker(state = pickerState)
+                if (typing) TimeInput(state = pickerState) else TimePicker(state = pickerState)
             }
         },
     )

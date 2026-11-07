@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import com.scresto.datrain.data.AlertsCache
 import com.scresto.datrain.data.Http
 import com.scresto.datrain.data.LatLon
+import com.scresto.datrain.data.Board
 import com.scresto.datrain.data.BoardPatch
 import com.scresto.datrain.data.LiveStop
 import com.scresto.datrain.data.LiveTrain
@@ -181,10 +182,11 @@ class TrainMapViewModel(application: Application) : AndroidViewModel(application
         for (stop in listOfNotNull(next, boarding, alighting).distinct().mapNotNull(active::getOrNull)) {
             val expected = stop.estimatedArrival ?: stop.estimatedDeparture ?: continue
             // Beyond what a board shows, the last full read stays the source.
-            if (expected - elapsed > BOARD_HORIZON_SECONDS) continue
+            if (expected - elapsed > Board.HORIZON.seconds) continue
             val board = api.board(stop.uic)
-            if (OffsetDateTime.now(PARIS) >= board.staleAfter || board.day != current.serviceDate) return false
-            val passage = BoardPatch.find(board, current, stop) ?: return false
+            val passage = BoardPatch.find(
+                board, current.number, current.serviceDate, stop.departureSeconds, stop.arrivalSeconds, OffsetDateTime.now(PARIS),
+            ) ?: return false
             if (passage.cancelled) return false
             updated = BoardPatch.apply(updated, current.stops.indexOf(stop), passage)
             until = listOfNotNull(until, board.staleAfter).min()
@@ -236,8 +238,6 @@ class TrainMapViewModel(application: Application) : AndroidViewModel(application
         const val REFRESH_MILLIS = 60_000L
         const val FULL_READ_MILLIS = 10 * 60_000L
         const val ALERTS_REFRESH_MILLIS = 15 * 60_000L
-        /** A station board shows about 3 hours ahead. */
-        const val BOARD_HORIZON_SECONDS = 3 * 3600
         const val TICK_MILLIS = 1_000L
     }
 }

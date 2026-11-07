@@ -23,14 +23,15 @@ class WidgetDataTest {
     @Test fun `a delay shows the estimated times`() {
         val next = WidgetData.next(favorite, listOf(ride), listOf(state.copy(delayMinutes = 15)), now)
         assertEquals(WidgetStatus.DELAYED, next.status)
-        assertEquals("Carbonne 07:29 → Saint-Agne 08:00", next.estimated)
+        assertEquals("07:29", next.newDeparture)
+        assertEquals("Carbonne → Saint-Agne 08:00", next.route)
         assertEquals("TER 872704 · aujourd'hui", next.title)
     }
 
     @Test fun `far from the departure nothing is claimed`() {
         val next = WidgetData.next(favorite, listOf(ride), listOf(null), day.minusDays(1).atTime(20, 0))
         assertEquals(WidgetStatus.PLANNED, next.status)
-        assertNull(next.estimated)
+        assertNull(next.newDeparture)
     }
 
     @Test fun `a cancellation wins over a delay`() {

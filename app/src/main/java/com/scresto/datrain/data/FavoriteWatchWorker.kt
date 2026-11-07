@@ -5,11 +5,14 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -30,74 +33,74 @@ import java.util.concurrent.TimeUnit
  */
 class FavoriteWatchWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
-        val history = RecentHistoryStore(applicationContext).load()
-        // The widget needs every favorite watched, even with notifications off; they then stay silent.
-        val widget = DatrainWidget.isPlaced(applicationContext)
-        val favorites = history.favorites.filter { widget || (history.notifications && it.notify) }
-        if (favorites.isEmpty()) return Result.success()
-
-        val repository = TimetableRepository.get(applicationContext)
-        // The manifest is tiny; files are only downloaded when they changed.
-        repository.refreshIfOlderThan(TIMETABLE_CHECK_MILLIS)
-        val planner = repository.plannerOrNull() ?: return Result.success()
-
-        val live = LiveSources(applicationContext)
-        val store = FavoriteWatchStore(applicationContext)
-        val states = store.load().toMutableMap()
-        val now = LocalDateTime.now(PARIS)
-
-        for (favorite in favorites) {
-            val tell = history.notifications && favorite.notify
-            // A journey is watched train by train, then its changes.
-            val rides = planner.nextJourney(favorite, FavoriteWatch.watchedFrom(favorite, states, now))
-            val legStates = favorite.legs.mapIndexed { i, leg ->
-                val key = if (favorite.isJourney) "${favorite.key}#$i" else favorite.key
-                val old = states[key]
-                val ride = rides?.getOrNull(i)
-                val state = try {
-                    read(leg, old, ride, live, now)
-                } catch (e: NomadeError) {
-                    null
-                } catch (e: IOException) {
-                    null
-                } ?: return@mapIndexed null
-                val changes = FavoriteWatch.changes(old, state, now)
-                if (tell && changes.isNotEmpty()) notify(applicationContext, leg, state.departureTime, changes, favorite.key)
-                FavoriteWatch.remembered(old, state, changes).also { states[key] = it }
-            }
-            legStates.zipWithNext().forEachIndexed { i, (before, after) ->
-                if (before == null || after == null) return@forEachIndexed
-                val minutes = FavoriteWatch.connectionAtRisk(before, after, TIGHT_CONNECTION_MINUTES) ?: return@forEachIndexed
-                val next = favorite.legs[i + 1]
-                if (tell) notify(applicationContext, next, after.departureTime, listOf(FavoriteChange.ConnectionAtRisk(next.fromName, minutes)), favorite.key)
-                states["${favorite.key}#${i + 1}"] = after.copy(connectionWarned = true)
-            }
-        }
-        store.save(states.filterKeys { key -> favorites.any { key == it.key || key.startsWith(it.key + "#") } })
-        DatrainWidget.refresh(applicationContext)
+        check(applicationContext)
         return Result.success()
     }
 
+    /** Before Android 12, a check started by an alarm runs as a short foreground task, which needs a notice. */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        createChannel(applicationContext)
+        val notice = NotificationCompat.Builder(applicationContext, CHANNEL)
+            .setSmallIcon(R.drawable.ic_train)
+            .setContentTitle("Vérification des trains favoris")
+            .setSilent(true)
+            .build()
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ForegroundInfo(FOREGROUND_ID, notice, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            ForegroundInfo(FOREGROUND_ID, notice)
+        }
+    }
+
     companion object {
+        /** One pass over the watched favorites: real time, notifications, widget, next departure alarm. */
+        suspend fun check(context: Context) {
+            val history = RecentHistoryStore(context).load()
+            // The widget needs every favorite watched, even with notifications off; they then stay silent.
+            val widget = DatrainWidget.isPlaced(context)
+            val favorites = history.favorites.filter { widget || (history.notifications && it.notify) }
+            if (favorites.isEmpty()) {
+                DepartureAlarms.cancel(context)
+                return
+            }
+
+            val repository = TimetableRepository.get(context)
+            // The manifest is tiny; files are only downloaded when they changed.
+            repository.refreshIfOlderThan(TIMETABLE_CHECK_MILLIS)
+            val planner = repository.plannerOrNull() ?: return
+
+            val store = FavoriteWatchStore(context)
+            val now = LocalDateTime.now(PARIS)
+            // Kept two days: enough to never look twice for the same run.
+            val lateChecked = store.lateChecked().filter { it.substringAfterLast('@') >= now.minusDays(1).toString() }.toSet()
+            val result = FavoriteCheck.run(
+                favorites, { history.notifications && it.notify }, planner, store.load(), lateChecked, NetworkLiveSource(context), now,
+            )
+            result.notices.forEach { notify(context, it.train, it.departure, it.changes, it.opens) }
+            store.save(result.states)
+            store.saveLateChecked(result.lateChecked)
+            DatrainWidget.refresh(context)
+            DepartureAlarms.schedule(context, result.departures, now, result.arrivals)
+        }
+
+        private const val FOREGROUND_ID = 1
         private const val NAME = "surveillance-favoris"
         private const val CHANNEL = "favoris"
         private const val TIMETABLE_CHECK_MILLIS = 6 * 3600 * 1000L
-        /** Same threshold as "Correspondance menacée" on the results. */
-        private const val TIGHT_CONNECTION_MINUTES = 5L
         private val CLOCK = DateTimeFormatter.ofPattern("HH:mm")
         private val DAY = DateTimeFormatter.ofPattern("EEEE d MMMM", Locale.FRENCH)
 
         /** For test builds: shows the current state of each favorite, without changing what is remembered. */
         suspend fun sendTest(context: Context, favorites: List<FavoriteTrain>) {
             val planner = TimetableRepository.get(context).plannerOrNull() ?: return
-            val live = LiveSources(context)
+            val live = NetworkLiveSource(context)
             val now = LocalDateTime.now(PARIS)
             for (favorite in favorites) {
                 val rides = if (favorite.isJourney) planner.nextJourney(favorite, now) else null
                 favorite.legs.forEachIndexed { i, leg ->
                     val ride = if (favorite.isJourney) rides?.getOrNull(i) else planner.nextRun(favorite, now)
                     val state = try {
-                        read(leg, null, ride, live, now)
+                        FavoriteCheck.read(leg, null, ride, live, now)
                     } catch (e: NomadeError) {
                         show(context, leg, null, "Test : réseau indisponible", favorite.key)
                         return@forEachIndexed
@@ -118,47 +121,6 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
                 else -> "à l'heure"
             }
             return (listOf(status) + state?.alerts.orEmpty()).joinToString("\n")
-        }
-
-        /**
-         * Null when there is nothing to watch. A first look reads the full feed once, because a run
-         * cancelled in advance has left the timetables. It throws without network, to be tried again.
-         */
-        private suspend fun read(
-            favorite: FavoriteTrain,
-            old: WatchState?,
-            ride: RideLeg?,
-            live: LiveSources,
-            now: LocalDateTime,
-        ): WatchState? {
-            val cancelled = if (old == null) FavoriteWatch.cancelledRun(favorite, ride, live.feed(), now) else null
-            if (cancelled != null) return FavoriteWatch.stateFor(cancelled, null).copy(cancelled = true)
-            // No run left at all: the expected one is gone.
-            if (ride == null) return if (old != null && old.arrivalTime > now) old.copy(cancelled = true) else null
-            var state = FavoriteWatch.stateFor(ride, old)
-            try {
-                when (FavoriteWatch.liveCheck(state, now)) {
-                    LiveCheck.NONE -> Unit
-                    LiveCheck.FULL_FEED -> state = FavoriteWatch.withFeed(state, live.feed(), ride)
-                    LiveCheck.STATION_BOARD -> {
-                        val boarding = now < state.departureTime.plusMinutes(state.delayMinutes.toLong())
-                        val uic = if (boarding) favorite.fromUic else favorite.toUic
-                        if (uic != 0) {
-                            state = FavoriteWatch.withBoard(state, live.board(uic), ride, boarding, OffsetDateTime.now(PARIS))
-                        }
-                    }
-                }
-                if (FavoriteWatch.needsAlerts(state, now)) {
-                    val alerts = TrainAlerts.of(live.alerts.get(), ride.trip)
-                    val titles = alerts.train + alerts.byStation[ride.trip.fromKey].orEmpty() + alerts.byStation[ride.trip.toKey].orEmpty()
-                    state = state.copy(alerts = titles.map { it.title }.toSet(), alertsDay = now.toLocalDate().toString())
-                }
-            } catch (e: NomadeError) {
-                // Next time: this check is simply skipped.
-            } catch (e: IOException) {
-                // Same.
-            }
-            return state
         }
 
         /** [openKey]: the favorite the notification opens, a whole journey for one of its trains. */
@@ -220,6 +182,7 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
                 manager.enqueueUniquePeriodicWork(NAME, ExistingPeriodicWorkPolicy.KEEP, request)
             } else {
                 manager.cancelUniqueWork(NAME)
+                DepartureAlarms.cancel(context)
             }
         }
 
@@ -232,14 +195,16 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
     }
 }
 
-/** What one round of checks has already downloaded. */
-private class LiveSources(context: Context) {
+/** Real time from the network; what one round of checks has downloaded is read only once. */
+private class NetworkLiveSource(context: Context) : LiveSource {
     private val nomade = NomadeApi(Http.client(context))
     private val boards = HashMap<Int, Board>()
     private var feed: LiveFeed? = null
-    val alerts = AlertsCache.get(context)
+    private val alertsCache = AlertsCache.get(context)
 
-    suspend fun feed(): LiveFeed = feed ?: nomade.liveFeed().also { feed = it }
+    override suspend fun feed(): LiveFeed = feed ?: nomade.liveFeed().also { feed = it }
 
-    suspend fun board(uic: Int): Board = boards[uic] ?: nomade.board(uic.toString()).also { boards[uic] = it }
+    override suspend fun board(uic: Int): Board = boards[uic] ?: nomade.board(uic.toString()).also { boards[uic] = it }
+
+    override suspend fun alerts(): List<ServiceAlert> = alertsCache.get()
 }

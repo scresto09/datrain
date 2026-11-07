@@ -108,6 +108,7 @@ object TimetableMerger {
             names[at] = idfm.stationNames[source]
             lat[at] = idfm.stationLat[source]
             lon[at] = idfm.stationLon[source]
+            uic[at] = idfm.stationUic[source]
         }
         @Suppress("UNCHECKED_CAST")
         val stationNames = names as Array<String>
@@ -157,16 +158,22 @@ object TimetableMerger {
         val cells = HashMap<Long, MutableList<Int>>()
         val words = arrayOfNulls<Set<String>>(sncf.stationCount)
         val byName = HashMap<String, Int>(sncf.stationCount)
+        val byUic = HashMap<Int, Int>(sncf.stationCount)
         for (s in 0 until sncf.stationCount) {
             cells.getOrPut(cell(sncf.stationLat[s], sncf.stationLon[s], 50)) { ArrayList(1) }.add(s)
             byName.putIfAbsent(sncf.stationNames[s], s)
+            if (sncf.stationUic[s] != 0) byUic.putIfAbsent(sncf.stationUic[s], s)
         }
         val indexes = IntArray(idfm.stationCount)
         val added = ArrayList<Int>()
         for (s in 0 until idfm.stationCount) {
             val name = idfm.stationNames[s]
             val forced = corrections.sameStation[name]?.let(byName::get)
-            val match = forced ?: findClose(idfm.stationLat[s], idfm.stationLon[s], name, sncf, cells, words)
+            // Name and place first: an IDFM station can group several zones, so its code may be a neighbour's
+            // (Montparnasse Vaugirard for Montparnasse). The code then catches what names alone miss.
+            val match = forced
+                ?: findClose(idfm.stationLat[s], idfm.stationLon[s], name, sncf, cells, words)
+                ?: idfm.stationUic[s].takeIf { it != 0 }?.let(byUic::get)
             if (match != null) {
                 indexes[s] = match
             } else {

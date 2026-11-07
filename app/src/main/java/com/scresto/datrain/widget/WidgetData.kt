@@ -1,6 +1,8 @@
 package com.scresto.datrain.widget
 
 import android.content.Context
+import com.scresto.datrain.data.Board
+import com.scresto.datrain.data.FavoriteRuns
 import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.FavoriteWatch
 import com.scresto.datrain.data.FavoriteWatchStore
@@ -22,13 +24,20 @@ sealed interface WidgetContent {
 
     data class Next(
         val favoriteKey: String,
+        /** "TER 872704 · aujourd'hui" */
         val title: String,
-        /** "Carbonne 07:14 → Saint-Agne 07:45" */
-        val planned: String,
-        /** The same with estimated times; null without delay. */
-        val estimated: String?,
+        /** Planned departure, shown large. */
+        val departure: String,
+        /** Estimated departure when it differs; the planned one is then struck through. */
+        val newDeparture: String?,
+        /** "Carbonne → Saint-Agne 07:45", with the estimated arrival. */
+        val route: String,
         val delayMinutes: Int,
         val status: WidgetStatus,
+        /** At the boarding station, once announced. */
+        val platform: String? = null,
+        /** "06:58": when the background check last looked; null if it never did. */
+        val checkedAt: String? = null,
     ) : WidgetContent
 }
 
@@ -39,9 +48,9 @@ sealed interface WidgetContent {
 object WidgetData {
     private val CLOCK = DateTimeFormatter.ofPattern("HH:mm")
     private val DAY = DateTimeFormatter.ofPattern("EEE d MMM", Locale.FRENCH)
-    /** Before this, the check has not looked at real time yet: "on time" would mean nothing. */
-    private const val LIVE_HOURS = 3L
     private const val TIGHT_CONNECTION_MINUTES = 5L
+    /** In place of the last check's time while a refresh is on its way: the widget then hides it. */
+    const val REFRESHING = "--:--"
 
     suspend fun load(context: Context): WidgetContent {
         val favorites = RecentHistoryStore(context).load().favorites
@@ -50,14 +59,24 @@ object WidgetData {
         val states = FavoriteWatchStore(context).load()
         val now = LocalDateTime.now(PARIS)
         val (favorite, rides) = favorites
-            .mapNotNull { favorite -> planner.nextJourney(favorite, FavoriteWatch.watchedFrom(favorite, states, now))?.let { favorite to it } }
+            .mapNotNull { favorite ->
+                val saved = states[FavoriteWatch.legKeys(favorite).last()]
+                FavoriteRuns.choose(FavoriteRuns.candidates(favorite, planner, now), null, saved, now)?.let { favorite to it }
+            }
             .minByOrNull { (_, rides) -> rides.first().trip.departure }
             ?: return WidgetContent.NoTimetable
         // Only what was learned about this very run counts.
         val legStates = FavoriteWatch.legKeys(favorite).mapIndexed { i, key ->
             states[key]?.takeIf { it.departure == rides.getOrNull(i)?.trip?.departure?.toString() }
         }
-        return next(favorite, rides, legStates, now)
+        val store = FavoriteWatchStore(context)
+        if (store.isRefreshing()) return next(favorite, rides, legStates, now).copy(checkedAt = REFRESHING)
+        val checked = store.checkedAt().takeIf { it > 0 }?.let {
+            java.time.Instant.ofEpochMilli(it).atZone(PARIS).toLocalDateTime()
+        }
+        return next(favorite, rides, legStates, now).copy(
+            checkedAt = checked?.takeIf { it.toLocalDate() == now.toLocalDate() }?.format(CLOCK),
+        )
     }
 
     fun next(favorite: FavoriteTrain, rides: List<RideLeg>, legStates: List<WatchState?>, now: LocalDateTime): WidgetContent.Next {
@@ -70,20 +89,23 @@ object WidgetData {
             before != null && after != null &&
                 FavoriteWatch.connectionAtRisk(before, after.copy(connectionWarned = false), TIGHT_CONNECTION_MINUTES) != null
         }
-        val live = legStates.any { it != null && (it.fullChecked || now >= it.departureTime.minusHours(LIVE_HOURS)) }
+        // Before a board can show it, the check has not looked at real time yet: "on time" would mean nothing.
+        val live = legStates.any { it != null && (it.fullChecked || now >= it.departureTime.minus(Board.HORIZON)) }
         val delayed = !cancelled && (departureDelay != 0 || arrivalDelay != 0)
-        fun line(departure: LocalDateTime, arrival: LocalDateTime) =
-            "${first.fromName} ${departure.format(CLOCK)} → ${last.toName} ${arrival.format(CLOCK)}"
+        val arrival = last.trip.arrival.plusMinutes(if (delayed) arrivalDelay.toLong() else 0)
         return WidgetContent.Next(
             favoriteKey = favorite.key,
             title = favorite.legs.joinToString(" + ") { "${it.product} ${it.number}" } + " · " + day(first.trip.departure.toLocalDate(), now.toLocalDate()),
-            planned = line(first.trip.departure, last.trip.arrival),
-            estimated = if (delayed) {
-                line(first.trip.departure.plusMinutes(departureDelay.toLong()), last.trip.arrival.plusMinutes(arrivalDelay.toLong()))
+            departure = first.trip.departure.format(CLOCK),
+            newDeparture = first.trip.departure.plusMinutes(departureDelay.toLong()).format(CLOCK).takeIf { delayed && departureDelay != 0 },
+            route = "${first.fromName} → ${last.toName} ${arrival.format(CLOCK)}",
+            platform = legStates.firstOrNull()?.platform,
+            // Same rule as the app: before boarding, the departure delay first; on board, the arrival one.
+            delayMinutes = if (now < first.trip.departure.plusMinutes(departureDelay.toLong())) {
+                departureDelay.takeIf { it != 0 } ?: arrivalDelay
             } else {
-                null
+                arrivalDelay
             },
-            delayMinutes = if (arrivalDelay != 0) arrivalDelay else departureDelay,
             status = when {
                 cancelled -> WidgetStatus.CANCELLED
                 atRisk -> WidgetStatus.CONNECTION_AT_RISK

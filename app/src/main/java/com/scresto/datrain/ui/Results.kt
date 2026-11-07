@@ -282,10 +282,8 @@ private fun statusLine(itinerary: Itinerary, atRisk: Boolean, now: LocalDateTime
     val last = itinerary.rides.last().trip
     val delay = when {
         first.departureDelayMinutes > 0 && first.departure <= now && first.estimatedDeparture > now ->
-            "Départ estimé à ${first.estimatedDeparture.format(TIME_FORMAT)} (+${first.departureDelayMinutes} min)"
-        last.arrivalDelayMinutes != 0 -> signed(last.arrivalDelayMinutes)
-        first.departureDelayMinutes != 0 -> signed(first.departureDelayMinutes)
-        else -> null
+            "Départ estimé à ${first.estimatedDeparture.format(TIME_FORMAT)} (+${first.departureDelayMinutes} min)"
+        else -> travellerDelay(first.departureDelayMinutes, last.arrivalDelayMinutes, boarded = now >= first.estimatedDeparture)?.let(::signed)
     }
     val risky = if (atRisk) itinerary.connections().firstOrNull { it.isAtRisk(TIGHT_CONNECTION_MINUTES) } else null
     val problem = when {
@@ -303,4 +301,4 @@ private fun statusLine(itinerary: Itinerary, atRisk: Boolean, now: LocalDateTime
     }
 }
 
-private fun signed(minutes: Int) = "${if (minutes > 0) "+" else ""}$minutes min"
+private fun signed(minutes: Int) = "${if (minutes > 0) "+" else ""}$minutes min"

@@ -48,6 +48,7 @@ import com.scresto.datrain.BuildConfig
 
 private const val HOMEPAGE = "https://scresto.pages-perso.free.fr/datrain"
 private const val HELP_PAGE = "https://scresto.pages-perso.free.fr/datrain/help.html"
+private const val PRIVACY_PAGE = "https://scresto.pages-perso.free.fr/datrain/privacy.html"
 
 /** A rounded rectangle with a notch on each side, where the ticket's stub would tear off. */
 private class TicketShape(private val notchY: Float, private val notchRadius: Float, private val corner: Float) : Shape {
@@ -129,6 +130,7 @@ internal fun AboutDialog(
                 val uriHandler = LocalUriHandler.current
                 AboutLink("Aide en ligne") { uriHandler.openUri(HELP_PAGE) }
                 AboutLink("Créé par Sylvain Cresto") { uriHandler.openUri(HOMEPAGE) }
+                AboutLink("Confidentialité") { uriHandler.openUri(PRIVACY_PAGE) }
                 AboutLink("Informations légales", onSources)
                 Text(
                     "Application indépendante, sans lien avec la SNCF ni Île-de-France Mobilités.",

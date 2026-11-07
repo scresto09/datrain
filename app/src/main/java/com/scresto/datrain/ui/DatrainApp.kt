@@ -53,10 +53,16 @@ import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.PARIS
 import com.scresto.datrain.data.StationGroups
 import com.scresto.datrain.data.TimetableState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.time.LocalDateTime
 import java.util.Locale
+
+private const val SHOWN_REFRESH_MILLIS = 2 * 60_000L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,11 +101,31 @@ fun DatrainApp(
         vm.refreshFavorites()
         onPauseOrDispose { }
     }
+    // Results and favorites stay current while on screen, not only when coming back to it.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                delay(SHOWN_REFRESH_MILLIS)
+                vm.refreshShown()
+            }
+        }
+    }
 
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
         state.trackedTrip?.let { trip ->
             // Opened from a journey with changes, the star is the whole journey's.
             val favorite = if (state.trackedJourney.size > 1) FavoriteTrain.of(state.trackedJourney) else FavoriteTrain.of(trip)
+            // Found by its number, the train has no stations of the traveller's: they are asked for first.
+            val byNumber = state.trackedJourney.size <= 1 && trip.fromKey.isEmpty()
+            val numberFavorite = if (byNumber) state.recent.favorites.firstOrNull { !it.isJourney && it.number == trip.number } else null
+            var pickStations by rememberSaveable { mutableStateOf(false) }
+            if (pickStations) {
+                FavoriteStationsDialog(trip, onDismiss = { pickStations = false }) { chosen ->
+                    pickStations = false
+                    toggleFavorite(chosen)
+                }
+            }
             TrainMapScreen(
                 trip,
                 journey = state.trackedJourney,
@@ -108,8 +134,12 @@ fun DatrainApp(
                     vm.track(null)
                     vm.refreshFavorites()
                 },
-                isFavorite = favorite != null && state.recent.isFavorite(favorite),
-                onToggleFavorite = favorite?.let { { toggleFavorite(it) } },
+                isFavorite = if (byNumber) numberFavorite != null else favorite != null && state.recent.isFavorite(favorite),
+                onToggleFavorite = when {
+                    numberFavorite != null -> { { vm.removeFavorite(numberFavorite) } }
+                    byNumber -> { { pickStations = true } }
+                    else -> favorite?.let { { toggleFavorite(it) } }
+                },
             )
             return@MaterialTheme
         }

@@ -103,6 +103,17 @@ fun SourcesScreen(onBack: () -> Unit) {
                     ),
                 )
             }
+            item {
+                Text(
+                    text(
+                        "Codes des gares d'Île-de-France : " to null,
+                        "Référentiel des arrêts" to "https://data.iledefrance-mobilites.fr/explore/dataset/arrets-transporteur/",
+                        " (Île-de-France Mobilités), sous « " to null,
+                        "Licence Ouverte 2.0" to "https://www.etalab.gouv.fr/licence-ouverte-open-licence/",
+                        " »." to null,
+                    ),
+                )
+            }
             item { Text("Ces fichiers sont filtrés pour ne garder que les trains et les cars, convertis dans un format compact, puis combinés sur votre téléphone.") }
             item {
                 Text(text("Méthode et fichiers transformés : " to null, "github.com/scresto09/datrain" to "https://github.com/scresto09/datrain"))

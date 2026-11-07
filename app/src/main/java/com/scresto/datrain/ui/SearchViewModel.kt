@@ -6,25 +6,21 @@ import androidx.lifecycle.viewModelScope
 import com.scresto.datrain.data.AlertsCache
 import com.scresto.datrain.data.CancelledQuery
 import com.scresto.datrain.data.FavoriteTrain
-import com.scresto.datrain.data.FavoriteWatch
 import com.scresto.datrain.data.FavoriteWatchWorker
 import com.scresto.datrain.data.GtfsRealtimeApi
 import com.scresto.datrain.data.Http
 import com.scresto.datrain.data.Itinerary
 import com.scresto.datrain.data.JourneyPlanner
-import com.scresto.datrain.data.LiveFeed
 import com.scresto.datrain.data.NomadeApi
 import com.scresto.datrain.data.NomadeError
 import com.scresto.datrain.data.PARIS
 import com.scresto.datrain.data.RealtimeOverlay
-import com.scresto.datrain.data.RealtimeTrip
 import com.scresto.datrain.data.RecentHistory
 import com.scresto.datrain.data.RecentHistoryStore
 import com.scresto.datrain.data.RecentJourney
 import com.scresto.datrain.data.RecentStation
 import com.scresto.datrain.data.RecentTrain
 import com.scresto.datrain.data.RideLeg
-import com.scresto.datrain.data.ServiceAlert
 import com.scresto.datrain.data.Station
 import com.scresto.datrain.data.TimetableMerger
 import com.scresto.datrain.data.TimetableRepository
@@ -33,8 +29,8 @@ import com.scresto.datrain.data.Trip
 import com.scresto.datrain.widget.DatrainWidget
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,73 +39,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
-
-/** [rides] is null if the known timetables no longer have the run. [isLive]: real-time data is known. */
-data class FavoriteRun(
-    val favorite: FavoriteTrain,
-    /** One train, or each train of a journey with changes. */
-    val rides: List<RideLeg>?,
-    val isLive: Boolean = false,
-    val messages: Int = 0,
-    /** The next run in the timetables. */
-    val next: List<RideLeg>? = rides,
-    /** An earlier run whose planned arrival has passed: if it is late, it is still the one to show. */
-    val late: List<RideLeg>? = null,
-) {
-    val ride: RideLeg? get() = rides?.firstOrNull()
-    val itinerary: Itinerary? get() = rides?.let(::Itinerary)
-}
-
-data class TrainSearchState(
-    val query: String = "",
-    val date: LocalDate,
-    val results: List<RideLeg> = emptyList(),
-    val isLoading: Boolean = false,
-)
-
-data class UiState(
-    val timetable: TimetableState = TimetableState.Loading,
-    val fromText: String = "",
-    val toText: String = "",
-    val from: Station? = null,
-    val to: Station? = null,
-    val date: LocalDate,
-    val time: LocalTime,
-    val arriveBy: Boolean = false,
-    val isLoading: Boolean = false,
-    val hasSearched: Boolean = false,
-    val itineraries: List<Itinerary> = emptyList(),
-    /** Next day to show: the following one, or the previous one when searching by arrival time. */
-    val moreDay: LocalDate? = null,
-    val realtimeUnavailable: Boolean = false,
-    val error: String? = null,
-    val trackedTrip: Trip? = null,
-    /** All trains of the journey the tracked one belongs to, when it has changes. */
-    val trackedJourney: List<Trip> = emptyList(),
-    val showSources: Boolean = false,
-    /** Alerts per journey, once its details are open. */
-    val alerts: Map<String, List<ServiceAlert>> = emptyMap(),
-    val alertsFailed: Set<String> = emptySet(),
-    val recent: RecentHistory = RecentHistory(),
-    val favoriteRuns: List<FavoriteRun> = emptyList(),
-    val showTrainSearch: Boolean = false,
-    val trainSearch: TrainSearchState = TrainSearchState(date = date),
-) {
-    val sameStation: Boolean get() = from != null && from.name == to?.name
-    val canSearch: Boolean
-        get() = timetable is TimetableState.Ready && from != null && to != null && !sameStation && !isLoading
-
-    /** IDFM timetables cover fewer days than SNCF ones. */
-    val suburbanMissingFrom: LocalDate?
-        get() = (timetable as? TimetableState.Ready)?.info?.suburbanUntil?.takeIf { date > it }
-}
 
 class SearchViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = TimetableRepository.get(application)
@@ -118,9 +53,12 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
     private val recentStore = RecentHistoryStore(application)
     private val searchLock = Mutex()
     private var searchJob: Job? = null
+    private var lastQuery: CancelledQuery? = null
     private var trainSearchJob: Job? = null
     private var favoritesJob: Job? = null
     private val alertsCache = AlertsCache.get(application)
+    private val favoritesLoader = FavoritesLoader(application, nomade, realtime, alertsCache)
+    private val resultsRealtime = ResultsRealtime(nomade, realtime)
 
     private val _state = MutableStateFlow(
         // Timetables are in Paris time, whatever the phone's time zone.
@@ -148,6 +86,7 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
     fun selectTo(station: Station) = _state.update { it.copy(toText = station.name, to = station) }
     fun setDate(date: LocalDate) = _state.update { it.copy(date = date) }
     fun setTime(time: LocalTime, arriveBy: Boolean) = _state.update { it.copy(time = time, arriveBy = arriveBy) }
+    fun setTypeTime(typing: Boolean) = updateRecent { it.copy(typeTime = typing) }
     fun swapStations() = _state.update {
         it.copy(fromText = it.toText, toText = it.fromText, from = it.to, to = it.from)
     }
@@ -207,20 +146,7 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
         val planner = (_state.value.timetable as? TimetableState.Ready)?.planner ?: return
         val favorite = _state.value.recent.favorites.firstOrNull { it.key == key } ?: return
         viewModelScope.launch {
-            val now = LocalDateTime.now(PARIS)
-            val (next, late) = withContext(Dispatchers.Default) {
-                planner.nextJourney(favorite, now) to planner.nextJourney(favorite, now.minus(LATE_RUN_WINDOW))
-            }
-            // A late run not there yet is the one the notification was about.
-            val rides = if (late != null && ids(late) != ids(next)) {
-                try {
-                    liveRun(FavoriteRun(favorite, next, next = next, late = late), nomade.liveFeed(), now).rides
-                } catch (e: NomadeError) {
-                    next
-                }
-            } else {
-                next
-            }
+            val rides = favoritesLoader.runToOpen(favorite, planner, LocalDateTime.now(PARIS))
             if (rides != null) openRun(rides)
         }
     }
@@ -239,80 +165,28 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
         val favorites = _state.value.recent.favorites
         favoritesJob = viewModelScope.launch {
             val now = LocalDateTime.now(PARIS)
-            val previous = _state.value.favoriteRuns
-            val runs = withContext(Dispatchers.Default) {
-                favorites.map { favorite ->
-                    val next = planner.nextJourney(favorite, now)
-                    val late = planner.nextJourney(favorite, now.minus(LATE_RUN_WINDOW))?.takeIf { ids(it) != ids(next) }
-                    val planned = FavoriteRun(favorite, next, next = next, late = late)
-                    // Same run as on screen: its delays and messages stay until fresh ones arrive, so nothing jumps.
-                    previous.firstOrNull { shown ->
-                        shown.favorite.key == favorite.key && (
-                            runId(shown) == runId(planned) ||
-                                (late != null && runId(shown) == ids(late) && shown.rides!!.last().trip.estimatedArrival > now)
-                            )
-                    }?.copy(favorite = favorite, next = next, late = late) ?: planned
-                }.sortedForDisplay()
-            }
+            val shown = _state.value.favoriteRuns
+            val runs = withContext(Dispatchers.Default) { favoritesLoader.planned(favorites, planner, shown, now) }
             _state.update { it.copy(favoriteRuns = runs) }
-            // A run taken out of the timetables because it is cancelled can only be seen in the live feed.
             if (favorites.isEmpty()) return@launch
             launch {
                 try {
-                    val feed = nomade.liveFeed()
-                    _state.update { state ->
-                        state.copy(
-                            favoriteRuns = state.favoriteRuns.map { run -> liveRun(run, feed, now) }.sortedForDisplay(),
-                        )
-                    }
+                    val live = favoritesLoader.live(_state.value.favoriteRuns, now)
+                    _state.update { it.copy(favoriteRuns = live) }
                 } catch (e: NomadeError) {
                     // The planned times remain shown.
                 }
             }
             launch {
                 try {
-                    val alerts = alertsCache.get()
-                    _state.update { state ->
-                        state.copy(
-                            favoriteRuns = state.favoriteRuns.map { run ->
-                                run.copy(
-                                    messages = run.itinerary?.let { alertsFor(it, alerts).size } ?: 0,
-                                )
-                            },
-                        )
-                    }
+                    val counted = favoritesLoader.messages(_state.value.favoriteRuns)
+                    _state.update { it.copy(favoriteRuns = counted) }
                 } catch (e: NomadeError) {
-                    // No icon: the favorites stay usable without alerts.
+                    // No count: the favorites stay usable without alerts.
                 }
             }
         }
     }
-
-    private fun liveRun(run: FavoriteRun, feed: LiveFeed, now: LocalDateTime): FavoriteRun {
-        // Planned arrival passed, but the train is late and not there yet: it stays the one shown.
-        run.late?.let { late ->
-            val updated = RealtimeOverlay.apply(listOf(Itinerary(late)), feed, emptyList()).single().rides
-            val tracked = late.any { feed.find(it.trip) != null }
-            if (tracked && !Itinerary(updated).cancelled && updated.last().trip.estimatedArrival > now) {
-                return run.copy(rides = updated, isLive = true)
-            }
-        }
-        if (!run.favorite.isJourney) {
-            val cancelled = FavoriteWatch.missingRun(run.favorite, run.next?.firstOrNull(), feed, now)
-            if (cancelled != null) return run.copy(rides = listOf(cancelled), isLive = true)
-        }
-        val rides = run.next ?: return run.copy(rides = null)
-        val live = rides.any { feed.find(it.trip) != null }
-        val updated = RealtimeOverlay.apply(listOf(Itinerary(rides)), feed, emptyList()).single().rides
-        return run.copy(rides = updated, isLive = live)
-    }
-
-    private fun runId(run: FavoriteRun) = ids(run.rides)
-
-    private fun ids(rides: List<RideLeg>?) = rides?.map { "${it.trip.number}@${it.trip.departure}" }
-
-    private fun List<FavoriteRun>.sortedForDisplay() =
-        sortedWith(compareBy({ it.ride == null }, { it.ride?.trip?.departure }))
 
     fun showTrainSearch(show: Boolean) = _state.update {
         it.copy(showTrainSearch = show, trainSearch = if (show) it.trainSearch else it.trainSearch.copy(query = "", results = emptyList()))
@@ -472,7 +346,9 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
                     },
                 )
             }
-            applyRealtime(CancelledQuery(from, to, date, startSeconds, arriveBy))
+            val query = CancelledQuery(from, to, date, startSeconds, arriveBy)
+            lastQuery = query
+            applyRealtime(query)
             loadResultsAlerts()
         }
     }
@@ -484,53 +360,21 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-    /** Planned times show first; slower real-time data then completes them. */
-    private suspend fun applyRealtime(query: CancelledQuery) {
-        val itineraries = _state.value.itineraries
-        val now = LocalDateTime.now(PARIS)
-        val soon = itineraries.flatMap { it.rides }.filter { ride ->
-            ride.trip.departure < now.plus(REALTIME_HORIZON) && ride.trip.arrival > now.minus(REALTIME_HORIZON)
+    /** While results or favorites are on screen, their real time is read again now and then. */
+    fun refreshShown() {
+        val s = _state.value
+        if (!s.hasSearched) {
+            refreshFavorites()
+            return
         }
-        // Today, the live feed may also hold cancelled trains that the search could not find.
-        if (soon.isEmpty() && query.date != now.toLocalDate()) return
+        val query = lastQuery ?: return
+        if (s.isLoading || s.itineraries.isEmpty()) return
+        viewModelScope.launch { applyRealtime(query) }
+    }
 
-        var unavailable = false
-        val feed: LiveFeed? = try {
-            nomade.liveFeed()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: NomadeError) {
-            unavailable = true
-            null
-        }
-        val missing = soon.any { feed?.find(it.trip) == null }
-        val updates: List<RealtimeTrip> = if (!missing) {
-            emptyList()
-        } else {
-            try {
-                realtime.tripUpdates()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: NomadeError) {
-                if (feed == null) unavailable = true
-                emptyList()
-            }
-        }
-        _state.update {
-            val updated = RealtimeOverlay.apply(it.itineraries, feed, updates)
-            val extra = feed?.let { live ->
-                RealtimeOverlay.cancelledMissing(live, query, updated) + RealtimeOverlay.lateDepartures(live, query, updated)
-            }.orEmpty()
-            val all = (updated + extra).distinctBy { itinerary -> itinerary.id }
-            it.copy(
-                itineraries = if (query.arriveBy) {
-                    all.sortedByDescending { itinerary -> itinerary.arrival }
-                } else {
-                    all.sortedBy { itinerary -> itinerary.departure }
-                },
-                realtimeUnavailable = unavailable,
-            )
-        }
+    private suspend fun applyRealtime(query: CancelledQuery) {
+        val applied = resultsRealtime.apply(_state.value.itineraries, query, LocalDateTime.now(PARIS)) ?: return
+        _state.update { it.copy(itineraries = applied.itineraries, realtimeUnavailable = applied.unavailable) }
     }
 
     /** So that each result can show it has alerts. On failure, opening a journey tries again. */
@@ -563,20 +407,8 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun alertsFor(itinerary: Itinerary, alerts: List<ServiceAlert>): List<ServiceAlert> =
-        alerts.filter { alert ->
-            itinerary.rides.any { ride ->
-                val trip = ride.trip
-                val concerned = alert.concerns(trip.number.split('-'), trip.fromKey, trip.toKey)
-                concerned && alert.isActiveAt(trip.departure.atZone(PARIS).toEpochSecond())
-            }
-        }.distinctBy { it.title to it.description }
-
     private companion object {
         val SHORT_DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMMM yyyy", Locale.FRENCH)
-        val REALTIME_HORIZON: Duration = Duration.ofHours(6)
-        /** How late a favorite's run can be and still be shown instead of the next one. */
-        val LATE_RUN_WINDOW: Duration = Duration.ofHours(6)
         const val END_OF_DAY = 24 * 3600 - 1
         const val TYPING_PAUSE_MILLIS = 300L
     }

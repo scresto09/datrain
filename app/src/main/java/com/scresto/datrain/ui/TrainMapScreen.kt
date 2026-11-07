@@ -306,7 +306,7 @@ private fun TrainBubble(state: TrainMapState, rows: List<StopRow>, trip: Trip) {
     val delay = next?.let { ((it.estimated ?: it.planned ?: 0) - (it.planned ?: 0)) / 60 } ?: 0
     val status = when {
         state.train?.hasRealtime != true -> "Horaires prévus"
-        delay > 0 -> "+$delay min"
+        delay > 0 -> "+$delay min"
         else -> "À l'heure"
     }
     Text("${trip.product} ${trip.number} · $status", fontWeight = FontWeight.SemiBold)
@@ -346,7 +346,7 @@ private fun OwnStop(label: String, row: StopRow, nowSeconds: Int) {
 }
 
 private fun formatMinutes(minutes: Int): String =
-    if (minutes >= 60) "${minutes / 60} h ${"%02d".format(minutes % 60)}" else "$minutes min"
+    if (minutes >= 60) "${minutes / 60} h ${"%02d".format(minutes % 60)}" else "$minutes min"
 
 private fun clock(seconds: Int?): String =
     seconds?.let { "%02d:%02d".format((it / 3600) % 24, (it / 60) % 60) }.orEmpty()
@@ -542,23 +542,28 @@ private fun LiveInfo(state: TrainMapState, progress: TrainProgress) {
     val stops = state.stops
     fun name(i: Int) = route.stops.getOrNull(i)?.name.orEmpty()
 
-    val (headline, relevantDelay) = when (progress) {
+    // The delay is named after its station: the train's next one, which may not be the traveller's.
+    val (headline, relevantDelay, at) = when (progress) {
         TrainProgress.NotStarted ->
-            "Départ de ${name(0)} à ${clock(stops.firstOrNull()?.estimatedDeparture)}" to stops.firstOrNull()?.departureDelaySeconds
+            Triple("Départ de ${name(0)} à ${clock(stops.firstOrNull()?.estimatedDeparture)}", stops.firstOrNull()?.departureDelaySeconds, name(0))
         is TrainProgress.AtStop ->
-            "À ${name(progress.index)} · départ à ${clock(stops.getOrNull(progress.index)?.estimatedDeparture)}" to
-                stops.getOrNull(progress.index)?.departureDelaySeconds
+            Triple(
+                "À ${name(progress.index)} · départ à ${clock(stops.getOrNull(progress.index)?.estimatedDeparture)}",
+                stops.getOrNull(progress.index)?.departureDelaySeconds, name(progress.index),
+            )
         is TrainProgress.Between ->
-            "Prochain arrêt : ${name(progress.to)} à ${clock(stops.getOrNull(progress.to)?.estimatedArrival)}" to
-                stops.getOrNull(progress.to)?.arrivalDelaySeconds
+            Triple(
+                "Prochain arrêt : ${name(progress.to)} à ${clock(stops.getOrNull(progress.to)?.estimatedArrival)}",
+                stops.getOrNull(progress.to)?.arrivalDelaySeconds, name(progress.to),
+            )
         TrainProgress.Arrived ->
-            "Arrivé à ${name(stops.lastIndex)}" to stops.lastOrNull()?.arrivalDelaySeconds
+            Triple("Arrivé à ${name(stops.lastIndex)}", stops.lastOrNull()?.arrivalDelaySeconds, name(stops.lastIndex))
     }
     Text(headline, fontWeight = FontWeight.SemiBold)
     if (state.train?.hasRealtime == true) {
         val minutes = (relevantDelay ?: 0) / 60
         if (minutes > 0) {
-            Text("Retard : +$minutes min", color = delayColor())
+            Text("Retard : +$minutes min à $at", color = delayColor())
         } else {
             Text("À l'heure")
         }
