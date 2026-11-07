@@ -84,4 +84,10 @@ jobs:
             echo
             echo "https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_REF_NAME"
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" "$apk" "$apk.sha256" --title "Datrain $VERSION" --notes-file notes.md
+          # A release already made by hand for this tag (from GitHub's page) gets the files and notes instead.
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$apk" "$apk.sha256" --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "Datrain $VERSION" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" "$apk" "$apk.sha256" --title "Datrain $VERSION" --notes-file notes.md
+          fi
