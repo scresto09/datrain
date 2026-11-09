@@ -23,8 +23,8 @@ android {
         minSdk = 26
         targetSdk = 36
         // Written here so that F-Droid sees each version; the tag must match: 1.2.0 -> v1.2.0, code 10200.
-        versionCode = 101
-        versionName = "0.1.1"
+        versionCode = 102
+        versionName = "0.1.2"
         // For a local test server: -PdatrainManifestUrl=http://localhost:8765/manifest.json
         val manifestUrl = providers.gradleProperty("datrainManifestUrl")
             .getOrElse("https://scresto09.github.io/datrain/manifest.json")

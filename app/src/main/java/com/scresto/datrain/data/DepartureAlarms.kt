@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
@@ -51,10 +52,11 @@ object DepartureAlarms {
     fun cancel(context: Context) = schedule(context, emptyList(), LocalDateTime.now(PARIS))
 
     internal fun runNow(context: Context, policy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE) {
-        val request = OneTimeWorkRequestBuilder<FavoriteWatchWorker>()
-            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+        val builder = OneTimeWorkRequestBuilder<FavoriteWatchWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .build()
+        // Before Android 12, expedited work runs as a foreground service: the app declares none, so it stays ordinary work there.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+        val request = builder.build()
         WorkManager.getInstance(context).enqueueUniqueWork(WORK_NAME, policy, request)
     }
 }

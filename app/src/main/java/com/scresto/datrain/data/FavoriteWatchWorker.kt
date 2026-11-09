@@ -5,14 +5,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -35,21 +32,6 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
     override suspend fun doWork(): Result {
         check(applicationContext)
         return Result.success()
-    }
-
-    /** Before Android 12, a check started by an alarm runs as a short foreground task, which needs a notice. */
-    override suspend fun getForegroundInfo(): ForegroundInfo {
-        createChannel(applicationContext)
-        val notice = NotificationCompat.Builder(applicationContext, CHANNEL)
-            .setSmallIcon(R.drawable.ic_train)
-            .setContentTitle("Vérification des trains favoris")
-            .setSilent(true)
-            .build()
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ForegroundInfo(FOREGROUND_ID, notice, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            ForegroundInfo(FOREGROUND_ID, notice)
-        }
     }
 
     companion object {
@@ -83,7 +65,6 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
             DepartureAlarms.schedule(context, result.departures, now, result.arrivals)
         }
 
-        private const val FOREGROUND_ID = 1
         private const val NAME = "surveillance-favoris"
         private const val CHANNEL = "favoris"
         private const val TIMETABLE_CHECK_MILLIS = 6 * 3600 * 1000L
