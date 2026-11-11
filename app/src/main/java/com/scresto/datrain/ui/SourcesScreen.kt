@@ -79,6 +79,11 @@ fun SourcesScreen(onBack: () -> Unit) {
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            item {
+                Text(
+                    "Datrain est une application indépendante. Elle n'est éditée ni par la SNCF ni par Île-de-France Mobilités, et n'est affiliée à aucun de ces organismes."
+                )
+            }
             item { Heading("Horaires") }
             item {
                 Text(
@@ -122,17 +127,17 @@ fun SourcesScreen(onBack: () -> Unit) {
             item {
                 Text(
                     text(
-                        "Données SNCF (ODbL), via " to null,
+                        "Informations de circulation en temps réel (retards, voies, suppressions et arrêts non desservis) : données SNCF (ODbL), diffusées via " to null,
                         "Train Nomade" to "https://www.data.gouv.fr/dataservices/api-train-nomade-departs-et-arrivees-des-gares-sncf-temps-reel-et-horaires-prevus",
-                        ", site indépendant sans lien avec la SNCF." to null,
+                        ", un service tiers indépendant, non édité et non exploité par la SNCF, et sans affiliation avec celle-ci." to null,
                     ),
                 )
             }
             item {
                 Text(
                     text(
-                        "Retards et perturbations SNCF au format GTFS-RT, via le " to null,
-                        "Point d'accès national" to "https://transport.data.gouv.fr/datasets/horaires-sncf",
+                        "Informations SNCF au format GTFS-RT : flux « alertes de service » (messages de perturbation) et « mises à jour des trajets » (retards et suppressions, utilisés en complément lorsque l'information n'est pas disponible via Train Nomade), accessibles depuis le " to null,
+                        "Point d'accès national des données de transport" to "https://transport.data.gouv.fr/datasets/horaires-sncf",
                         "." to null,
                     ),
                 )
@@ -141,9 +146,11 @@ fun SourcesScreen(onBack: () -> Unit) {
             item {
                 Text(
                     text(
-                        "OpenFreeMap © OpenMapTiles, données " to null,
+                        "Fond de carte fourni par OpenFreeMap / OpenMapTiles, à partir des données " to null,
                         "OpenStreetMap" to "https://www.openstreetmap.org/copyright",
-                        ". Voies : Train Nomade." to null,
+                        ". Tracés ferroviaires et référentiel des gares : données diffusées par " to null,
+                        "Train Nomade" to "https://www.data.gouv.fr/dataservices/api-train-nomade-departs-et-arrivees-des-gares-sncf-temps-reel-et-horaires-prevus",
+                        "." to null,
                     ),
                 )
             }
@@ -167,7 +174,7 @@ fun SourcesScreen(onBack: () -> Unit) {
                 Text("Datrain est un logiciel libre fourni tel quel, sans aucune garantie, et vous l'utilisez à vos risques et périls. Dans les limites permises par la loi, son auteur n'est pas responsable des conséquences de son utilisation, par exemple d'un train manqué ou d'une information erronée. Vérifiez vos horaires auprès du transporteur.")
             }
             item { Heading("À savoir") }
-            item { Text("Datrain est une application indépendante, sans lien avec la SNCF ni Île-de-France Mobilités. Elle ne vend pas de billets et ne garantit pas que les correspondances proposées puissent être réservées ensemble.") }
+            item { Text("Datrain n'est ni un service public ni un service officiel de la SNCF ou d'Île-de-France Mobilités. Elle ne vend pas de billets et ne garantit pas que les correspondances proposées puissent être réservées ensemble.") }
             item { Text("La position d'un train est estimée d'après ses horaires et ses retards : ce n'est pas un GPS.") }
             item { Text("Les temps de changement sont des estimations : 10 min dans une même gare, 15 min à pied entre deux gares proches, 1 h entre deux grandes gares parisiennes. Seuls certains temps de marche en Île-de-France sont officiels.") }
         }
