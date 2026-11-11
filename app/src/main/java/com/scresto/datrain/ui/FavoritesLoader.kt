@@ -60,6 +60,35 @@ internal class FavoritesLoader(
         return runs.map { liveRun(it, feed, updates, now) }.sortedForDisplay()
     }
 
+    /**
+     * Whether these runs, read by the screen, say something the background check has not saved: another delay,
+     * a cancellation, or another number of messages when [messagesKnown]. Only for [watched] favorites, the
+     * ones that check follows.
+     */
+    fun aheadOfSaved(runs: List<FavoriteRun>, watched: (FavoriteTrain) -> Boolean, messagesKnown: Boolean): Boolean {
+        val saved = FavoriteWatchStore(context).load()
+        return runs.any { run ->
+            val rides = run.rides
+            if (rides == null || !run.isLive || !watched(run.favorite)) return@any false
+            val states = FavoriteWatch.legKeys(run.favorite).mapIndexed { i, key ->
+                saved[key]?.takeIf { it.departure == rides.getOrNull(i)?.trip?.departure?.toString() }
+            }
+            val messages = messagesKnown && run.messages != states.flatMap { it?.alerts.orEmpty() }.toSet().size
+            messages || rides.zip(states).any { (ride, state) ->
+                state == null || state.cancelled != ride.trip.cancelled ||
+                    state.departureDelay != ride.trip.departureDelayMinutes || state.arrivalDelay != ride.trip.arrivalDelayMinutes
+            }
+        }
+    }
+
+    /** What [aheadOfSaved] compares, as one string: the same string means nothing new was seen. */
+    fun liveSignature(runs: List<FavoriteRun>, watched: (FavoriteTrain) -> Boolean, messagesKnown: Boolean): String =
+        runs.filter { it.isLive && watched(it.favorite) }.joinToString("|") { run ->
+            run.favorite.key + (if (messagesKnown) "#${run.messages}" else "") + run.rides.orEmpty().joinToString("") { ride ->
+                with(ride.trip) { ";$departure,$departureDelayMinutes,$arrivalDelayMinutes,$cancelled" }
+            }
+        }
+
     /** Throws [NomadeError] when the alerts cannot be read. */
     suspend fun messages(runs: List<FavoriteRun>): List<FavoriteRun> {
         val alerts = alertsCache.get()

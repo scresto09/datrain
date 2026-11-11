@@ -113,13 +113,6 @@ internal fun realtimeLabel(trip: Trip, showCancelled: Boolean): String? {
     return parts.joinToString(" · ").ifEmpty { null }
 }
 
-/**
- * The delay that matters to the traveller: before boarding, at their departure (or else at arrival);
- * once on board, only at their arrival. The same rule on every screen.
- */
-internal fun travellerDelay(departureDelay: Int, arrivalDelay: Int, boarded: Boolean): Int? =
-    if (boarded) arrivalDelay.takeIf { it != 0 } else (departureDelay.takeIf { it != 0 } ?: arrivalDelay.takeIf { it != 0 })
-
 internal fun formatDay(date: LocalDate): String =
     date.format(if (date.year == LocalDate.now(PARIS).year) THIS_YEAR_DATE_FORMAT else DATE_FORMAT)
 

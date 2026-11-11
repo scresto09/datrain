@@ -34,6 +34,7 @@ class FavoriteCheckTest {
         val offline: Boolean = false,
         val day: LocalDate,
         val fresh: OffsetDateTime,
+        val updates: List<RealtimeTrip> = emptyList(),
     ) : LiveSource {
         override suspend fun feed(): LiveFeed {
             if (offline) throw NomadeError.Network
@@ -46,6 +47,8 @@ class FavoriteCheckTest {
         }
 
         override suspend fun alerts(): List<ServiceAlert> = if (offline) throw NomadeError.Network else emptyList()
+
+        override suspend fun tripUpdates(): List<RealtimeTrip> = if (offline) throw NomadeError.Network else updates
     }
 
     private fun live(vararg trains: LiveTrain, boards: Map<Int, Board> = emptyMap(), offline: Boolean = false) =

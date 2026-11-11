@@ -2,6 +2,7 @@ package com.scresto.datrain.widget
 
 import android.content.Context
 import com.scresto.datrain.data.Board
+import com.scresto.datrain.data.FavoriteCheck.TIGHT_CONNECTION_MINUTES
 import com.scresto.datrain.data.FavoriteRuns
 import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.FavoriteWatch
@@ -38,6 +39,8 @@ sealed interface WidgetContent {
         val platform: String? = null,
         /** "06:58": when the background check last looked; null if it never did. */
         val checkedAt: String? = null,
+        /** SNCF messages about the run, as counted on the favorites list. */
+        val messages: Int = 0,
     ) : WidgetContent
 }
 
@@ -48,7 +51,6 @@ sealed interface WidgetContent {
 object WidgetData {
     private val CLOCK = DateTimeFormatter.ofPattern("HH:mm")
     private val DAY = DateTimeFormatter.ofPattern("EEE d MMM", Locale.FRENCH)
-    private const val TIGHT_CONNECTION_MINUTES = 5L
     /** In place of the last check's time while a refresh is on its way: the widget then hides it. */
     const val REFRESHING = "--:--"
 
@@ -82,8 +84,8 @@ object WidgetData {
     fun next(favorite: FavoriteTrain, rides: List<RideLeg>, legStates: List<WatchState?>, now: LocalDateTime): WidgetContent.Next {
         val first = rides.first()
         val last = rides.last()
-        val departureDelay = legStates.firstOrNull()?.delayMinutes ?: 0
-        val arrivalDelay = legStates.lastOrNull()?.delayMinutes ?: 0
+        val departureDelay = legStates.firstOrNull()?.departureDelay ?: 0
+        val arrivalDelay = legStates.lastOrNull()?.arrivalDelay ?: 0
         val cancelled = legStates.any { it?.cancelled == true }
         val atRisk = legStates.zipWithNext().any { (before, after) ->
             before != null && after != null &&
@@ -100,6 +102,7 @@ object WidgetData {
             newDeparture = first.trip.departure.plusMinutes(departureDelay.toLong()).format(CLOCK).takeIf { delayed && departureDelay != 0 },
             route = "${first.fromName} → ${last.toName} ${arrival.format(CLOCK)}",
             platform = legStates.firstOrNull()?.platform,
+            messages = legStates.flatMap { it?.alerts.orEmpty() }.toSet().size,
             // Same rule as the app: before boarding, the departure delay first; on board, the arrival one.
             delayMinutes = if (now < first.trip.departure.plusMinutes(departureDelay.toLong())) {
                 departureDelay.takeIf { it != 0 } ?: arrivalDelay

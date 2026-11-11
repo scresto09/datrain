@@ -47,7 +47,7 @@ object FavoriteRuns {
         saved != null && saved.departure == rides.last().trip.departure.toString()
 
     private fun savedGoing(rides: List<RideLeg>, saved: WatchState?, now: LocalDateTime): Boolean =
-        knows(rides, saved) && !saved!!.cancelled && saved.arrivalTime.plusMinutes(saved.delayMinutes.toLong()) > now
+        knows(rides, saved) && !saved!!.cancelled && saved.arrivalTime.plusMinutes(saved.arrivalDelay.toLong()) > now
 
     fun ids(rides: List<RideLeg>?): List<String>? = rides?.map { "${it.trip.number}@${it.trip.departure}" }
 }

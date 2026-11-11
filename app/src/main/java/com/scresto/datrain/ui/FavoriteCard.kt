@@ -43,22 +43,8 @@ internal fun FavoriteCard(
         Row(Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 val day = rides?.let { " · ${favoriteDay(it.first().trip.departure.toLocalDate())}" }.orEmpty()
-                // The delay that matters: at arrival, or at departure when only that one is known.
-                val delay = rides?.takeUnless { Itinerary(it).cancelled }?.let {
-                    val first = it.first().trip
-                    travellerDelay(
-                        first.departureDelayMinutes, it.last().trip.arrivalDelayMinutes,
-                        boarded = java.time.LocalDateTime.now(PARIS) >= first.estimatedDeparture,
-                    )
-                }
-                val red = delayColor()
-                Text(
-                    buildAnnotatedString {
-                        append(favorite.legs.joinToString(" + ") { "${it.product} ${it.number}" } + day)
-                        delay?.let { withStyle(SpanStyle(color = red)) { append("  ${if (it > 0) "+" else ""}$it min") } }
-                    },
-                    fontWeight = FontWeight.SemiBold,
-                )
+                // The delay is on the status line below, with its station.
+                Text(favorite.legs.joinToString(" + ") { "${it.product} ${it.number}" } + day, fontWeight = FontWeight.SemiBold)
                 if (rides == null) {
                     Text("${favorite.fromName} → ${favorite.lastToName}")
                     Text("Ne circule plus dans les horaires connus", color = MaterialTheme.colorScheme.error)
@@ -112,7 +98,10 @@ private fun stationsLine(itinerary: Itinerary): AnnotatedString {
     }
 }
 
-/** One line at most: the most serious state first, then the messages. Train by train details are on the map. */
+/**
+ * The most serious state first, then the delay as on the results, then the messages. Train by train details
+ * are on the map.
+ */
 @Composable
 private fun statusLine(run: FavoriteRun): AnnotatedString? {
     val itinerary = run.itinerary ?: return null
@@ -124,13 +113,20 @@ private fun statusLine(run: FavoriteRun): AnnotatedString? {
         ride.trip.serviceNotes.firstOrNull()?.let { if (journey) "${ride.trip.product} ${ride.trip.number} : $it" else it }
     }
     val delayed = itinerary.rides.any { it.trip.departureDelayMinutes != 0 || it.trip.arrivalDelayMinutes != 0 }
+    val delay = delayText(itinerary, java.time.LocalDateTime.now(PARIS))
+        ?.let { AnnotatedString(it, SpanStyle(color = delayColor(), fontWeight = FontWeight.SemiBold)) }
+    val problem = when {
+        risky != null -> AnnotatedString("⚠ Correspondance menacée à ${risky.station}", red)
+        note != null -> AnnotatedString("⚠ $note", red)
+        else -> null
+    }
     val state: AnnotatedString? = when {
         cancelled != null -> AnnotatedString(
             if (journey) "${cancelled.trip.product} ${cancelled.trip.number} supprimé" else "Supprimé",
             red,
         )
-        risky != null -> AnnotatedString("⚠ Correspondance menacée à ${risky.station}", red)
-        note != null -> AnnotatedString("⚠ $note", red)
+        problem != null && delay != null -> problem + AnnotatedString(" · ") + delay
+        problem != null || delay != null -> problem ?: delay
         !delayed && run.isLive -> AnnotatedString("À l'heure")
         else -> null
     }

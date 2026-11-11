@@ -51,13 +51,14 @@ object DepartureAlarms {
 
     fun cancel(context: Context) = schedule(context, emptyList(), LocalDateTime.now(PARIS))
 
-    internal fun runNow(context: Context, policy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE) {
-        val builder = OneTimeWorkRequestBuilder<FavoriteWatchWorker>()
+    /** Never replaces a check already queued or running: it would be cut off for one that brings nothing newer. */
+    internal fun runNow(context: Context) {
+        val request = OneTimeWorkRequestBuilder<FavoriteWatchWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-        // Before Android 12, expedited work runs as a foreground service: the app declares none, so it stays ordinary work there.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-        val request = builder.build()
-        WorkManager.getInstance(context).enqueueUniqueWork(WORK_NAME, policy, request)
+            // Before Android 12, expedited work runs as a foreground service: the app declares none, so it stays ordinary work there.
+            .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST) }
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.KEEP, request)
     }
 }
 
@@ -72,7 +73,7 @@ class DepartureAlarmReceiver : BroadcastReceiver() {
         CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
             try {
                 val done = withTimeoutOrNull(ALARM_CHECK_MILLIS) { FavoriteWatchWorker.check(context.applicationContext) }
-                if (done == null) DepartureAlarms.runNow(context.applicationContext, ExistingWorkPolicy.KEEP)
+                if (done == null) DepartureAlarms.runNow(context.applicationContext)
             } finally {
                 pending.finish()
             }

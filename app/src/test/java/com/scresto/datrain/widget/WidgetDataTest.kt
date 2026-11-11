@@ -28,6 +28,14 @@ class WidgetDataTest {
         assertEquals("TER 872704 · aujourd'hui", next.title)
     }
 
+    @Test fun `the departure and arrival delays are each where they belong, with the messages`() {
+        val known = state.copy(delayMinutes = 5, departureDelayMinutes = 5, arrivalDelayMinutes = 20, alerts = setOf("Grève", "Travaux"))
+        val next = WidgetData.next(favorite, listOf(ride), listOf(known), now)
+        assertEquals("07:19", next.newDeparture)
+        assertEquals("Carbonne → Saint-Agne 08:05", next.route)
+        assertEquals(2, next.messages)
+    }
+
     @Test fun `far from the departure nothing is claimed`() {
         val next = WidgetData.next(favorite, listOf(ride), listOf(null), day.minusDays(1).atTime(20, 0))
         assertEquals(WidgetStatus.PLANNED, next.status)

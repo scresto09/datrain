@@ -56,6 +56,8 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
     private var lastQuery: CancelledQuery? = null
     private var trainSearchJob: Job? = null
     private var favoritesJob: Job? = null
+    /** What the screen knew when it last started the background check: see [catchUpBackground]. */
+    private var caughtUp: String? = null
     private val alertsCache = AlertsCache.get(application)
     private val favoritesLoader = FavoritesLoader(application, nomade, realtime, alertsCache)
     private val resultsRealtime = ResultsRealtime(nomade, realtime)
@@ -169,23 +171,49 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
             val runs = withContext(Dispatchers.Default) { favoritesLoader.planned(favorites, planner, shown, now) }
             _state.update { it.copy(favoriteRuns = runs) }
             if (favorites.isEmpty()) return@launch
-            launch {
+            var liveRead = false
+            var counted = false
+            val live = launch {
                 try {
-                    val live = favoritesLoader.live(_state.value.favoriteRuns, now)
-                    _state.update { it.copy(favoriteRuns = live) }
+                    val updated = favoritesLoader.live(_state.value.favoriteRuns, now)
+                    _state.update { it.copy(favoriteRuns = updated) }
+                    liveRead = true
                 } catch (e: NomadeError) {
                     // The planned times remain shown.
                 }
             }
-            launch {
+            val messages = launch {
                 try {
-                    val counted = favoritesLoader.messages(_state.value.favoriteRuns)
-                    _state.update { it.copy(favoriteRuns = counted) }
+                    val updated = favoritesLoader.messages(_state.value.favoriteRuns)
+                    _state.update { it.copy(favoriteRuns = updated) }
+                    counted = true
                 } catch (e: NomadeError) {
                     // No count: the favorites stay usable without alerts.
                 }
             }
+            live.join()
+            messages.join()
+            if (liveRead) catchUpBackground(counted)
         }
+    }
+
+    /**
+     * The screen reads real time itself; the widget and the notifications only know what the background
+     * check saved. When the screen knows more (a delay, a cancellation, a message), that check runs at once,
+     * so that the widget shows the same and a notification goes out. Once for each new thing seen: the two
+     * may read slightly different sources, and the same difference must not start a check every refresh.
+     */
+    private fun catchUpBackground(messagesKnown: Boolean) {
+        val app = getApplication<Application>()
+        val history = _state.value.recent
+        val widget = DatrainWidget.isPlaced(app)
+        val watched = { favorite: FavoriteTrain -> widget || (history.notifications && favorite.notify) }
+        val runs = _state.value.favoriteRuns
+        val known = favoritesLoader.liveSignature(runs, watched, messagesKnown)
+        if (known == caughtUp || !favoritesLoader.aheadOfSaved(runs, watched, messagesKnown)) return
+        caughtUp = known
+        // Not tied to the favorites refresh: a new refresh must not cut it off.
+        viewModelScope.launch { FavoriteWatchWorker.check(app, force = true) }
     }
 
     fun showTrainSearch(show: Boolean) = _state.update {

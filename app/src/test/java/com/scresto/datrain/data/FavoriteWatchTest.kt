@@ -28,6 +28,14 @@ class FavoriteWatchTest {
         assertEquals(LiveCheck.STATION_BOARD, FavoriteWatch.liveCheck(state, at(15, 30)))
     }
 
+    @Test fun `a refresh asked by the user reads the full feed at once`() {
+        val read = state.copy(fullAt = "2026-11-05T09:00")
+        assertEquals(LiveCheck.NONE, FavoriteWatch.liveCheck(read, at(9, 45)))
+        assertEquals(LiveCheck.FULL_FEED, FavoriteWatch.liveCheck(read, at(9, 45), force = true))
+        assertEquals(LiveCheck.NONE, FavoriteWatch.liveCheck(state, at(8), force = true))
+        assertTrue(FavoriteWatch.needsAlerts(state.copy(alertsDay = "2026-11-05"), at(9), force = true))
+    }
+
     @Test fun `no check once arrived or cancelled, a delay extends the watch`() {
         assertEquals(LiveCheck.NONE, FavoriteWatch.liveCheck(state, at(16, 1)))
         assertEquals(LiveCheck.STATION_BOARD, FavoriteWatch.liveCheck(state.copy(delayMinutes = 30), at(16, 1)))
@@ -96,12 +104,29 @@ class FavoriteWatchTest {
         assertTrue(FavoriteWatch.changes(remembered, first, at(14)).isEmpty())
     }
 
-    @Test fun `a platform change is announced, not the first platform known`() {
-        assertTrue(FavoriteWatch.changes(state, state.copy(platform = "4"), at(14)).isEmpty())
+    @Test fun `a platform change is announced, not the first platform known hours ahead`() {
+        assertTrue(FavoriteWatch.changes(state, state.copy(platform = "4"), at(13)).isEmpty())
         assertEquals(
             listOf(FavoriteChange.PlatformChanged("5")),
             FavoriteWatch.changes(state.copy(platform = "4"), state.copy(platform = "5"), at(14)),
         )
+    }
+
+    @Test fun `a platform first known within the hour before the departure is announced`() {
+        assertEquals(listOf(FavoriteChange.PlatformAnnounced("5")), FavoriteWatch.changes(state, state.copy(platform = "5"), at(14, 40)))
+        assertTrue(FavoriteWatch.changes(state, state.copy(platform = "5"), at(15, 5)).isEmpty())
+    }
+
+    @Test fun `the next run taken over tells messages not already told for the previous one`() {
+        val told = state.copy(alerts = setOf("Travaux"))
+        val next = WatchState("2026-11-06T15:00", "2026-11-06T16:00", alerts = setOf("Travaux", "Préavis de grève"))
+        assertEquals(listOf(FavoriteChange.NewAlert("Préavis de grève")), FavoriteWatch.changes(told, next, at(17)))
+    }
+
+    @Test fun `the next run taken over already cancelled or late is told`() {
+        val next = WatchState("2026-11-06T15:00", "2026-11-06T16:00")
+        assertEquals(listOf(FavoriteChange.Cancelled), FavoriteWatch.changes(state, next.copy(cancelled = true), at(17)))
+        assertEquals(listOf(FavoriteChange.Delayed(10)), FavoriteWatch.changes(state, next.copy(delayMinutes = 10), at(17)))
     }
 
     @Test fun `only new messages are announced`() {
@@ -135,6 +160,28 @@ class FavoriteWatchTest {
         assertEquals(10, updated.delayMinutes)
         assertEquals("4", updated.platform)
         assertTrue(FavoriteWatch.withBoard(state, board(passage(cancelled = true)), ride, true, now)!!.cancelled)
+    }
+
+    @Test fun `the departure and arrival boards keep their own delays`() {
+        val departed = FavoriteWatch.withBoard(state, board(passage(delay = 300)), ride, boarding = true, now)!!
+        val both = FavoriteWatch.withArrivalBoard(departed, board(passage(delay = 900)), ride, now)!!
+        assertEquals(5, both.departureDelay)
+        assertEquals(15, both.arrivalDelay)
+        assertEquals(5, both.delayMinutes)
+    }
+
+    @Test fun `SNCF's own feed gives the delays of a train the live feed lacks`() {
+        val date = day.format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)
+        val epoch = { time: LocalDateTime -> time.atZone(PARIS).toEpochSecond() }
+        val update = RealtimeTrip(
+            "42", date, cancelled = false,
+            stops = listOf(RealtimeStop("87000001", null, epoch(at(15, 5))), RealtimeStop("87000002", epoch(at(16, 12)), null)),
+        )
+        val updated = FavoriteWatch.withUpdates(state, listOf(update), ride)
+        assertEquals(5, updated.departureDelay)
+        assertEquals(12, updated.arrivalDelay)
+        assertTrue(updated.fullChecked)
+        assertEquals(0, FavoriteWatch.withUpdates(state, emptyList(), ride).delayMinutes)
     }
 
     @Test fun `a station board without the train or out of date cannot tell`() {

@@ -275,18 +275,12 @@ private fun timesLine(itinerary: Itinerary): AnnotatedString {
 
 /**
  * One line under the times: the most serious problem in red, then the delay in orange.
- * Past its planned time and not gone yet, the train's estimated departure is what to know.
+ * Before the train leaves the traveller's station, its departure there; after, its arrival at theirs.
  */
 @Composable
 private fun statusLine(itinerary: Itinerary, atRisk: Boolean, now: LocalDateTime): AnnotatedString? {
     if (itinerary.cancelled) return null
-    val first = itinerary.rides.first().trip
-    val last = itinerary.rides.last().trip
-    val delay = when {
-        first.departureDelayMinutes > 0 && first.departure <= now && first.estimatedDeparture > now ->
-            "Départ estimé à ${first.estimatedDeparture.format(TIME_FORMAT)} (+${first.departureDelayMinutes} min)"
-        else -> travellerDelay(first.departureDelayMinutes, last.arrivalDelayMinutes, boarded = now >= first.estimatedDeparture)?.let(::signed)
-    }
+    val delay = delayText(itinerary, now)
     val risky = if (atRisk) itinerary.connections().firstOrNull { it.isAtRisk(TIGHT_CONNECTION_MINUTES) } else null
     val problem = when {
         risky != null -> "⚠ Correspondance menacée à ${risky.station}"
@@ -300,6 +294,23 @@ private fun statusLine(itinerary: Itinerary, atRisk: Boolean, now: LocalDateTime
         problem?.let { withStyle(red) { append(it) } }
         if (problem != null && delay != null) append(" · ")
         delay?.let { withStyle(orange) { append(it) } }
+    }
+}
+
+/**
+ * "Départ de Carbonne à 07:29 (+15 min)" before the train leaves the traveller's station, then "Arrivée à
+ * Saint-Agne à 08:00 (+15 min)": each delay said with its station, so that one is not taken for the other.
+ * Null when on time. Shared by the results and the favorites.
+ */
+internal fun delayText(itinerary: Itinerary, now: LocalDateTime): String? {
+    val first = itinerary.rides.first()
+    val last = itinerary.rides.last()
+    return when {
+        now < first.trip.estimatedDeparture && first.trip.departureDelayMinutes != 0 ->
+            "Départ de ${first.fromName} à ${first.trip.estimatedDeparture.format(TIME_FORMAT)} (${signed(first.trip.departureDelayMinutes)})"
+        last.trip.arrivalDelayMinutes != 0 ->
+            "Arrivée à ${last.toName} à ${last.trip.estimatedArrival.format(TIME_FORMAT)} (${signed(last.trip.arrivalDelayMinutes)})"
+        else -> null
     }
 }
 

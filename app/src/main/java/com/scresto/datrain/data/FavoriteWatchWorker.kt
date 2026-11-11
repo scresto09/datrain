@@ -17,6 +17,8 @@ import androidx.work.WorkerParameters
 import com.scresto.datrain.MainActivity
 import com.scresto.datrain.R
 import com.scresto.datrain.widget.DatrainWidget
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
@@ -35,8 +37,16 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
     }
 
     companion object {
-        /** One pass over the watched favorites: real time, notifications, widget, next departure alarm. */
-        suspend fun check(context: Context) {
+        /**
+         * One pass over the watched favorites: real time, notifications, widget, next departure alarm.
+         * One at a time: the periodic check, an alarm and the widget could otherwise see the same change
+         * and ring twice. [force]: asked by the user, real time is read at once whatever was read lately.
+         */
+        suspend fun check(context: Context, force: Boolean = false) = running.withLock { checkNow(context, force) }
+
+        private val running = Mutex()
+
+        private suspend fun checkNow(context: Context, force: Boolean) {
             val history = RecentHistoryStore(context).load()
             // The widget needs every favorite watched, even with notifications off; they then stay silent.
             val widget = DatrainWidget.isPlaced(context)
@@ -56,7 +66,7 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
             // Kept two days: enough to never look twice for the same run.
             val lateChecked = store.lateChecked().filter { it.substringAfterLast('@') >= now.minusDays(1).toString() }.toSet()
             val result = FavoriteCheck.run(
-                favorites, { history.notifications && it.notify }, planner, store.load(), lateChecked, NetworkLiveSource(context), now,
+                favorites, { history.notifications && it.notify }, planner, store.load(), lateChecked, NetworkLiveSource(context), now, force,
             )
             result.notices.forEach { notify(context, it.train, it.departure, it.changes, it.opens) }
             store.save(result.states)
@@ -148,6 +158,7 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
             is FavoriteChange.ScheduleChanged -> "Nouvel horaire : départ à ${change.departure.format(CLOCK)}"
             is FavoriteChange.Delayed -> if (change.minutes > 0) "Retard : +${change.minutes} min" else "De nouveau à l'heure"
             is FavoriteChange.PlatformChanged -> "Changement de voie : voie ${change.platform}"
+            is FavoriteChange.PlatformAnnounced -> "Voie annoncée : voie ${change.platform}"
             is FavoriteChange.NewAlert -> change.title
             is FavoriteChange.ConnectionAtRisk -> "Correspondance menacée à ${change.station} : ${change.minutes} min pour changer"
         }
@@ -181,11 +192,19 @@ private class NetworkLiveSource(context: Context) : LiveSource {
     private val nomade = NomadeApi(Http.client(context))
     private val boards = HashMap<Int, Board>()
     private var feed: LiveFeed? = null
+    private var updates: List<RealtimeTrip>? = null
+    private val realtime = GtfsRealtimeApi(Http.client(context))
     private val alertsCache = AlertsCache.get(context)
 
-    override suspend fun feed(): LiveFeed = feed ?: nomade.liveFeed().also { feed = it }
+    /** An out-of-date feed counts as no feed: the check is skipped and tried again, rather than trusting old delays. */
+    override suspend fun feed(): LiveFeed = feed ?: nomade.liveFeed().also {
+        if (OffsetDateTime.now(PARIS) >= it.staleAfter) throw NomadeError.Api("out-of-date feed")
+        feed = it
+    }
 
     override suspend fun board(uic: Int): Board = boards[uic] ?: nomade.board(uic.toString()).also { boards[uic] = it }
 
     override suspend fun alerts(): List<ServiceAlert> = alertsCache.get()
+
+    override suspend fun tripUpdates(): List<RealtimeTrip> = updates ?: realtime.tripUpdates().also { updates = it }
 }

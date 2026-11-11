@@ -48,7 +48,6 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextDecoration
 import androidx.glance.text.TextStyle
 import androidx.glance.visibility
-import androidx.work.ExistingWorkPolicy
 import com.scresto.datrain.MainActivity
 import com.scresto.datrain.R
 import com.scresto.datrain.data.DepartureAlarms
@@ -116,6 +115,7 @@ private val FAINT = ColorProvider(day = Color(0x80FFFFFF), night = Color(0x80FFF
 private val PILL_NEUTRAL = ColorProvider(day = Color(0x33FFFFFF), night = Color(0x33FFFFFF))
 private val PILL_DELAY = ColorProvider(day = Color(0xFFE65100), night = Color(0xFFE65100))
 private val PILL_RED = ColorProvider(day = Color(0xFFD32F2F), night = Color(0xFFD32F2F))
+private val MESSAGE = ColorProvider(day = Color(0xFFFFB74D), night = Color(0xFFFFB74D))
 
 @Composable
 private fun Content(context: Context, content: WidgetContent) {
@@ -200,6 +200,15 @@ private fun RowScope.Next(next: WidgetContent.Next, openArea: GlanceModifier) {
                 Text(label, style = TextStyle(color = WHITE, fontSize = 11.sp, fontWeight = FontWeight.Bold))
             }
         }
+        // As on the favorites list: the messages themselves are a tap away, on the map.
+        if (next.messages > 0) {
+            Text(
+                if (next.messages == 1) "1 message" else "${next.messages} messages",
+                style = TextStyle(color = MESSAGE, fontSize = 11.sp, fontWeight = FontWeight.Medium),
+                modifier = GlanceModifier.padding(top = 2.dp),
+                maxLines = 1,
+            )
+        }
         // The time of the last check sits by the refresh arrow, which says what it is. While a refresh
         // is on its way both vanish, keeping their room so that nothing else moves, then come back.
         val refreshing = next.checkedAt == WidgetData.REFRESHING
@@ -230,10 +239,10 @@ class RefreshAction : ActionCallback {
         val start = System.currentTimeMillis()
         FavoriteWatchStore(context).markRefreshAsked()
         DatrainWidget.redraw(context, glanceId)
-        val done = withTimeoutOrNull(REFRESH_TIMEOUT_MILLIS) { FavoriteWatchWorker.check(context) }
+        val done = withTimeoutOrNull(REFRESH_TIMEOUT_MILLIS) { FavoriteWatchWorker.check(context, force = true) }
         val took = System.currentTimeMillis() - start
         if (done == null) {
-            DepartureAlarms.runNow(context, ExistingWorkPolicy.KEEP)
+            DepartureAlarms.runNow(context)
         } else if (took < MIN_REFRESHING_MILLIS) {
             // A check with nothing to read takes a tenth of a second: "…" would not even be seen.
             delay(MIN_REFRESHING_MILLIS - took)
