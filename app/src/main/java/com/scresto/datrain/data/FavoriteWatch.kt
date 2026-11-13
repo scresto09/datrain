@@ -31,9 +31,18 @@ data class WatchState(
     /** Delays at the traveller's own departure and arrival stations, when read; otherwise [delayMinutes]. */
     val departureDelayMinutes: Int? = null,
     val arrivalDelayMinutes: Int? = null,
+    /** Departure and arrival delays last told, each on its own; [notifiedDelay] for states saved before. */
+    val notifiedDepartureMinutes: Int? = null,
+    val notifiedArrivalMinutes: Int? = null,
 ) {
     val departureDelay: Int get() = departureDelayMinutes ?: delayMinutes
     val arrivalDelay: Int get() = arrivalDelayMinutes ?: delayMinutes
+    val notifiedDepartureDelay: Int get() = notifiedDepartureMinutes ?: notifiedDelay
+    val notifiedArrivalDelay: Int get() = notifiedArrivalMinutes ?: notifiedDelay
+    /** Estimated departure, delay included. */
+    val leavesAt: LocalDateTime get() = departureTime.plusMinutes(departureDelay.toLong())
+    /** Estimated arrival, delay included. */
+    val arrivesAt: LocalDateTime get() = arrivalTime.plusMinutes(arrivalDelay.toLong())
     val date: String get() = departure.substringBefore('T')
     val departureTime: LocalDateTime get() = LocalDateTime.parse(departure)
     val arrivalTime: LocalDateTime get() = LocalDateTime.parse(arrival)
@@ -44,7 +53,12 @@ sealed interface FavoriteChange {
     /** The run left the timetables: this is how cancellations known in advance show up. */
     data class Removed(val departure: LocalDateTime) : FavoriteChange
     data class ScheduleChanged(val departure: LocalDateTime) : FavoriteChange
-    data class Delayed(val minutes: Int) : FavoriteChange
+    /**
+     * Delays now known: at the departure, null once the train has left, and at the arrival. Told when either
+     * moved enough since last told. The departure and arrival delays are compared each on its own: sources
+     * that give only one of them must not look like a change.
+     */
+    data class Delayed(val departure: Int?, val arrival: Int) : FavoriteChange
     data class PlatformChanged(val platform: String) : FavoriteChange
     /** The first platform known, shortly before the departure: often what travellers wait for on the concourse. */
     data class PlatformAnnounced(val platform: String) : FavoriteChange
@@ -55,9 +69,10 @@ sealed interface FavoriteChange {
 enum class LiveCheck { NONE, FULL_FEED, STATION_BOARD }
 
 object FavoriteWatch {
-    private const val MIN_DELAY_CHANGE = 5
+    private const val MIN_DELAY_CHANGE = 3
     private val ALERTS_BEFORE: Duration = Duration.ofHours(48)
     private val ALERTS_EVERY: Duration = Duration.ofMinutes(30)
+    private val ALERTS_EVERY_ON_THE_DAY: Duration = Duration.ofHours(1)
     private val FULL_FEED_EVERY: Duration = Duration.ofHours(1)
     /** A platform that appears this close to the departure was announced late, as for long-distance trains. */
     private val PLATFORM_ANNOUNCED_BEFORE: Duration = Duration.ofHours(1)
@@ -96,13 +111,18 @@ object FavoriteWatch {
     }
 
     /**
-     * Messages are read once a day within two days of the run, and every half hour from the time boards
-     * show the train until it arrives: an incident posted on the morning itself is seen before leaving.
+     * Messages are read once a day within two days of the run, hourly on its day, and every half hour from
+     * the time boards show the train until it arrives: a message posted in the morning is seen within the hour.
      */
     fun needsAlerts(state: WatchState, now: LocalDateTime, force: Boolean = false): Boolean {
         val close = now >= state.departureTime.minus(Board.HORIZON) && now < state.arrivalTime.plusMinutes(state.arrivalDelay.toLong())
         if (close) return force || state.alertsAt.isEmpty() || now >= LocalDateTime.parse(state.alertsAt).plus(ALERTS_EVERY)
-        return (force || state.alertsDay != now.toLocalDate().toString()) && now >= state.departureTime.minus(ALERTS_BEFORE)
+        if (now < state.departureTime.minus(ALERTS_BEFORE)) return false
+        if (force) return true
+        if (now.toLocalDate() == state.departureTime.toLocalDate()) {
+            return state.alertsAt.isEmpty() || now >= LocalDateTime.parse(state.alertsAt).plus(ALERTS_EVERY_ON_THE_DAY)
+        }
+        return state.alertsDay != now.toLocalDate().toString()
     }
 
     /** Real-time knowledge is kept as long as this is still the same run. */
@@ -128,14 +148,14 @@ object FavoriteWatch {
             // published the day before. Messages already told for the previous run are not repeated.
             if (new.cancelled) return listOf(FavoriteChange.Cancelled)
             return buildList {
-                if (kotlin.math.abs(new.delayMinutes) >= MIN_DELAY_CHANGE) add(FavoriteChange.Delayed(new.delayMinutes))
+                delayChange(new, 0, 0, now)?.let { add(it) }
                 (new.alerts - old.alerts).forEach { add(FavoriteChange.NewAlert(it)) }
             }
         }
         if (new.cancelled) return if (old.cancelled) emptyList() else listOf(FavoriteChange.Cancelled)
         return buildList {
             if (old.departure != new.departure) add(FavoriteChange.ScheduleChanged(new.departureTime))
-            if (kotlin.math.abs(new.delayMinutes - old.notifiedDelay) >= MIN_DELAY_CHANGE) add(FavoriteChange.Delayed(new.delayMinutes))
+            delayChange(new, old.notifiedDepartureDelay, old.notifiedArrivalDelay, now)?.let { add(it) }
             when {
                 old.platform != null && new.platform != null && old.platform != new.platform ->
                     add(FavoriteChange.PlatformChanged(new.platform))
@@ -147,10 +167,26 @@ object FavoriteWatch {
         }
     }
 
+    /**
+     * The departure delay counts until the train leaves, the arrival one until it arrives. Null when neither
+     * moved by [MIN_DELAY_CHANGE] minutes since last told.
+     */
+    private fun delayChange(new: WatchState, toldDeparture: Int, toldArrival: Int, now: LocalDateTime): FavoriteChange.Delayed? {
+        val leaving = now < new.leavesAt
+        val departureMoved = leaving && kotlin.math.abs(new.departureDelay - toldDeparture) >= MIN_DELAY_CHANGE
+        val arrivalMoved = kotlin.math.abs(new.arrivalDelay - toldArrival) >= MIN_DELAY_CHANGE
+        if (!departureMoved && !arrivalMoved) return null
+        return FavoriteChange.Delayed(new.departureDelay.takeIf { leaving }, new.arrivalDelay)
+    }
+
     /** What to remember after this check. A first look only sets the reference. */
     fun remembered(old: WatchState?, new: WatchState, changes: List<FavoriteChange>): WatchState =
         if (old == null || old.date != new.date || changes.any { it is FavoriteChange.Delayed }) {
-            new.copy(notifiedDelay = new.delayMinutes)
+            new.copy(
+                notifiedDelay = new.delayMinutes,
+                notifiedDepartureMinutes = new.departureDelay,
+                notifiedArrivalMinutes = new.arrivalDelay,
+            )
         } else {
             new
         }

@@ -20,9 +20,11 @@ class CheckResult(
     /** Late runs already looked for, as "favorite key@departure". */
     val lateChecked: Set<String>,
     val notices: List<Notice>,
-    /** Departures and estimated arrivals of the runs followed, for the alarms around them. */
+    /** Planned and estimated departures, and estimated arrivals, of the runs followed, for the alarms around them. */
     val departures: List<LocalDateTime>,
     val arrivals: List<LocalDateTime>,
+    /** Estimated departure and arrival of each run followed that is not cancelled, for the checks on board. */
+    val trips: List<Pair<LocalDateTime, LocalDateTime>> = emptyList(),
 )
 
 /**
@@ -43,12 +45,14 @@ object FavoriteCheck {
         live: LiveSource,
         now: LocalDateTime,
         force: Boolean = false,
+        fullFeed: Boolean = false,
     ): CheckResult {
         val states = saved.toMutableMap()
         val checked = lateChecked.toMutableSet()
         val notices = ArrayList<Notice>()
         val departures = ArrayList<LocalDateTime>()
         val arrivals = ArrayList<LocalDateTime>()
+        val trips = ArrayList<Pair<LocalDateTime, LocalDateTime>>()
         for (favorite in favorites) {
             val tell = tells(favorite)
             val candidates = FavoriteRuns.candidates(favorite, planner, now)
@@ -76,7 +80,7 @@ object FavoriteCheck {
                 val key = FavoriteWatch.legKeys(favorite)[i]
                 val old = states[key]
                 val state = try {
-                    read(leg, old, rides?.getOrNull(i), live, now, force)
+                    read(leg, old, rides?.getOrNull(i), live, now, force, fullFeed)
                 } catch (e: NomadeError) {
                     null
                 } catch (e: IOException) {
@@ -86,7 +90,12 @@ object FavoriteCheck {
                 if (tell && changes.isNotEmpty()) notices += Notice(leg, state.departureTime, changes, favorite.key)
                 FavoriteWatch.remembered(old, state, changes).also { states[key] = it }
             }
-            legStates.lastOrNull()?.takeUnless { it.cancelled }?.let { arrivals += it.arrivalTime.plusMinutes(it.arrivalDelay.toLong()) }
+            legStates.lastOrNull()?.takeUnless { it.cancelled }?.let { arrivals += it.arrivesAt }
+            // The alarms before the departure follow its delay too: a late train is checked up to when it really leaves.
+            val leaving = legStates.firstOrNull()?.takeUnless { it.cancelled }
+            leaving?.let { departures += it.leavesAt }
+            val arriving = legStates.lastOrNull()?.takeUnless { it.cancelled }
+            if (leaving != null && arriving != null && legStates.none { it?.cancelled == true }) trips += leaving.leavesAt to arriving.arrivesAt
             legStates.zipWithNext().forEachIndexed { i, (before, after) ->
                 if (before == null || after == null) return@forEachIndexed
                 val minutes = FavoriteWatch.connectionAtRisk(before, after, TIGHT_CONNECTION_MINUTES) ?: return@forEachIndexed
@@ -96,14 +105,15 @@ object FavoriteCheck {
             }
         }
         val kept = states.filterKeys { key -> favorites.any { key == it.key || key.startsWith(it.key + "#") } }
-        return CheckResult(kept, checked, notices, departures, arrivals)
+        return CheckResult(kept, checked, notices, departures, arrivals, trips)
     }
 
     /**
      * What real time says about [ride] of [favorite], from [old] if it is the same run. Null when there is
      * nothing to watch. A first look reads the full feed once, because a run cancelled in advance has left
      * the timetables. It throws without network, to be tried again. [force]: asked by the user, see
-     * [FavoriteWatch.liveCheck].
+     * [FavoriteWatch.liveCheck]. [fullFeed]: the full feed in place of the station boards, as the favorites
+     * list reads it: a board gives only one of the two delays, the feed both, from the same data.
      */
     suspend fun read(
         favorite: FavoriteTrain,
@@ -112,6 +122,7 @@ object FavoriteCheck {
         live: LiveSource,
         now: LocalDateTime,
         force: Boolean = false,
+        fullFeed: Boolean = false,
     ): WatchState? {
         val cancelled = if (old == null) FavoriteWatch.cancelledRun(favorite, ride, live.feed(), now) else null
         if (cancelled != null) return FavoriteWatch.stateFor(cancelled, null).copy(cancelled = true)
@@ -128,22 +139,10 @@ object FavoriteCheck {
             when (FavoriteWatch.liveCheck(state, now, force)) {
                 LiveCheck.NONE -> Unit
                 LiveCheck.FULL_FEED -> state = withLive(state, live, ride).copy(fullAt = now.toString())
-                LiveCheck.STATION_BOARD -> {
-                    val boarding = now < state.departureTime.plusMinutes(state.departureDelay.toLong())
-                    // The code from today's timetables first: a favorite saved before a station's code was
-                    // known keeps a 0.
-                    val uic = (if (boarding) ride.trip.fromKey else ride.trip.toKey).toIntOrNull()
-                        ?: (if (boarding) favorite.fromUic else favorite.toUic)
-                    // A board that cannot tell, or no code at all, is replaced by the full feed: a delay is never missed.
-                    val board = if (uic != 0) live.board(uic) else null
-                    val at = now.atZone(PARIS).toOffsetDateTime()
-                    state = board?.let { FavoriteWatch.withBoard(state, it, ride, boarding, at) } ?: withLive(state, live, ride)
-                    // Before boarding, the arrival too, once its station's board shows the train.
-                    val arrivalUic = ride.trip.toKey.toIntOrNull() ?: favorite.toUic
-                    val arrivalSoon = now >= state.arrivalTime.plusMinutes(state.arrivalDelay.toLong()).minus(Board.HORIZON)
-                    if (boarding && !state.cancelled && arrivalSoon && arrivalUic != 0) {
-                        FavoriteWatch.withArrivalBoard(state, live.board(arrivalUic), ride, at)?.let { state = it }
-                    }
+                LiveCheck.STATION_BOARD -> state = if (fullFeed) {
+                    withLive(state, live, ride).copy(fullAt = now.toString())
+                } else {
+                    withBoards(state, favorite, ride, live, now)
                 }
             }
             if (FavoriteWatch.needsAlerts(state, now, force)) {
@@ -157,6 +156,39 @@ object FavoriteCheck {
             // Same.
         }
         return state
+    }
+
+    /**
+     * Real time from the light station boards. Before boarding, the departure board, then the arrival board
+     * once it shows the train; on board, the arrival board. A board that cannot tell, or no station code, gives
+     * way to the full feed. When the departure delay moved and no board can tell the arrival yet, the full feed
+     * gives both, from the same data, rather than an arrival left as it was. Throws when neither the first
+     * board nor the full feed in its place can be read.
+     */
+    private suspend fun withBoards(state: WatchState, favorite: FavoriteTrain, ride: RideLeg, live: LiveSource, now: LocalDateTime): WatchState {
+        val boarding = now < state.leavesAt
+        val at = now.atZone(PARIS).toOffsetDateTime()
+        // The code from today's timetables first: a favorite saved before a station's code was known keeps a 0.
+        val uic = (if (boarding) ride.trip.fromKey else ride.trip.toKey).toIntOrNull()
+            ?: (if (boarding) favorite.fromUic else favorite.toUic)
+        val fromBoard = if (uic != 0) FavoriteWatch.withBoard(state, live.board(uic), ride, boarding, at) else null
+        val read = fromBoard ?: withLive(state, live, ride)
+        if (!boarding || read.cancelled) return read
+        val arrivalUic = ride.trip.toKey.toIntOrNull() ?: favorite.toUic
+        if (arrivalUic != 0 && now >= read.arrivesAt.minus(Board.HORIZON)) {
+            orNull { FavoriteWatch.withArrivalBoard(read, live.board(arrivalUic), ride, at) }?.let { return it }
+        }
+        if (fromBoard == null || read.departureDelay == state.departureDelay) return read
+        return orNull { withLive(read, live, ride).copy(fullAt = now.toString()) } ?: read
+    }
+
+    /** Null when real time cannot be read this time. */
+    private inline fun <T> orNull(read: () -> T): T? = try {
+        read()
+    } catch (e: NomadeError) {
+        null
+    } catch (e: IOException) {
+        null
     }
 
     /** The live feed, or SNCF's own feed for a train the live feed does not have, as on the favorites list. */

@@ -442,7 +442,6 @@ object RealtimeOverlay {
         )
     }
 
-    private fun LiveFeed.isFresh() = java.time.OffsetDateTime.now(PARIS) < staleAfter
 
     private fun delayMinutes(epoch: Long?, planned: LocalDateTime, zone: ZoneId): Int {
         if (epoch == null) return 0

@@ -56,6 +56,8 @@ data class LiveTrain(
 }
 
 data class LiveFeed(val collectedAt: OffsetDateTime, val staleAfter: OffsetDateTime, val trains: List<LiveTrain>) {
+    /** Past [staleAfter], its delays are old: it counts as no feed. */
+    fun isFresh(now: OffsetDateTime = OffsetDateTime.now(PARIS)): Boolean = now < staleAfter
 
     /**
      * After midnight, the source copies a train still running into the new day, its times counted from that

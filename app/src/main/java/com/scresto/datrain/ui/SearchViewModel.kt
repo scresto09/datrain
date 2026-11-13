@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.scresto.datrain.data.AlertsCache
+import com.scresto.datrain.data.ServiceAlert
 import com.scresto.datrain.data.CancelledQuery
 import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.FavoriteWatchWorker
@@ -172,11 +173,13 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
             _state.update { it.copy(favoriteRuns = runs) }
             if (favorites.isEmpty()) return@launch
             var liveRead = false
-            var counted = false
+            // Both run at once: each applies its part to what the other has already shown, rather than
+            // replacing it with the list it started from.
+            var alerts: List<ServiceAlert>? = null
             val live = launch {
                 try {
                     val updated = favoritesLoader.live(_state.value.favoriteRuns, now)
-                    _state.update { it.copy(favoriteRuns = updated) }
+                    _state.update { it.copy(favoriteRuns = alerts?.let { known -> favoritesLoader.withMessages(updated, known) } ?: updated) }
                     liveRead = true
                 } catch (e: NomadeError) {
                     // The planned times remain shown.
@@ -184,24 +187,25 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
             }
             val messages = launch {
                 try {
-                    val updated = favoritesLoader.messages(_state.value.favoriteRuns)
-                    _state.update { it.copy(favoriteRuns = updated) }
-                    counted = true
+                    val known = favoritesLoader.alerts()
+                    alerts = known
+                    _state.update { it.copy(favoriteRuns = favoritesLoader.withMessages(it.favoriteRuns, known)) }
                 } catch (e: NomadeError) {
                     // No count: the favorites stay usable without alerts.
                 }
             }
             live.join()
             messages.join()
-            if (liveRead) catchUpBackground(counted)
+            if (liveRead) catchUpBackground(alerts != null)
         }
     }
 
     /**
      * The screen reads real time itself; the widget and the notifications only know what the background
      * check saved. When the screen knows more (a delay, a cancellation, a message), that check runs at once,
-     * so that the widget shows the same and a notification goes out. Once for each new thing seen: the two
-     * may read slightly different sources, and the same difference must not start a check every refresh.
+     * reading the full feed as the screen does, so that the widget shows the same and a notification goes out.
+     * Once for each new thing seen: the feed may have changed in between, and the same difference must not
+     * start a check every refresh.
      */
     private fun catchUpBackground(messagesKnown: Boolean) {
         val app = getApplication<Application>()
@@ -213,7 +217,7 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
         if (known == caughtUp || !favoritesLoader.aheadOfSaved(runs, watched, messagesKnown)) return
         caughtUp = known
         // Not tied to the favorites refresh: a new refresh must not cut it off.
-        viewModelScope.launch { FavoriteWatchWorker.check(app, force = true) }
+        viewModelScope.launch { FavoriteWatchWorker.check(app, force = true, fullFeed = true) }
     }
 
     fun showTrainSearch(show: Boolean) = _state.update {

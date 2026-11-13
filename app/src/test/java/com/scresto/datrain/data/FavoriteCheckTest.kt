@@ -36,7 +36,10 @@ class FavoriteCheckTest {
         val fresh: OffsetDateTime,
         val updates: List<RealtimeTrip> = emptyList(),
     ) : LiveSource {
+        var feedReads = 0
+
         override suspend fun feed(): LiveFeed {
+            feedReads++
             if (offline) throw NomadeError.Network
             return LiveFeed(OffsetDateTime.now(), fresh, trains)
         }
@@ -75,6 +78,38 @@ class FavoriteCheckTest {
         assertTrue(result.notices.isEmpty())
     }
 
+    @Test fun `asked by the favorites list, the full feed gives both delays as the list shows them`() {
+        val saved = mapOf(direct.key to WatchState("${day}T08:00", "${day}T09:00", fullChecked = true))
+        // The departure board has the train on time, and says nothing of the arrival.
+        val board = Board(day, fresh, listOf(Passage("1", null, 28800, 0, 0, null, cancelled = false)))
+        val source = live(train("1", arrivalDelay = 360), boards = mapOf(a to board))
+        val fromBoard = check(direct, day.atTime(7, 30), source, saved).states.getValue(direct.key)
+        assertEquals(0, fromBoard.arrivalDelay)
+        val fromFeed = runBlocking {
+            FavoriteCheck.run(listOf(direct), { true }, planner, saved, emptySet(), source, day.atTime(7, 30), force = true, fullFeed = true)
+        }
+        val state = fromFeed.states.getValue(direct.key)
+        assertEquals(0, state.departureDelay)
+        assertEquals(6, state.arrivalDelay)
+    }
+
+    @Test fun `a departure delay seen on the board brings the arrival delay from the full feed`() {
+        val saved = mapOf(direct.key to WatchState("${day}T08:00", "${day}T09:00", fullChecked = true, departureDelayMinutes = 0, arrivalDelayMinutes = 0))
+        val late = Board(day, fresh, listOf(Passage("1", null, 28800, 0, 600, null, cancelled = false)))
+        val feedTrain = LiveTrain("1", "1", day, false, true, listOf(LiveStop("$a", null, 28800, departureDelaySeconds = 600), LiveStop("$c", 32400, null, 720)))
+        val state = check(direct, day.atTime(5, 30), live(feedTrain, boards = mapOf(a to late)), saved).states.getValue(direct.key)
+        assertEquals(10, state.departureDelay)
+        assertEquals(12, state.arrivalDelay)
+    }
+
+    @Test fun `an unchanged departure delay on the board does not read the full feed`() {
+        val saved = mapOf(direct.key to WatchState("${day}T08:00", "${day}T09:00", fullChecked = true, departureDelayMinutes = 0, arrivalDelayMinutes = 0))
+        val onTime = Board(day, fresh, listOf(Passage("1", null, 28800, 0, 0, null, cancelled = false)))
+        val source = live(train("1", arrivalDelay = 360), boards = mapOf(a to onTime))
+        check(direct, day.atTime(5, 30), source, saved)
+        assertEquals(0, source.feedReads)
+    }
+
     @Test fun `a train already cancelled at the first look is announced`() {
         val result = check(direct, day.atTime(7, 0), live(train("1", cancelled = true)))
         assertEquals(listOf(FavoriteChange.Cancelled), result.notices.single().changes)
@@ -86,7 +121,7 @@ class FavoriteCheckTest {
         val board = Board(day.plusDays(1), fresh, listOf(Passage("2", 2040, null, 420, 0, null, cancelled = false)))
         val result = check(late, day.plusDays(1).atTime(0, 20), live(boards = mapOf(c to board)), saved)
         assertEquals(7, result.states.getValue(late.key).delayMinutes)
-        assertEquals(listOf(FavoriteChange.Delayed(7)), result.notices.single().changes)
+        assertEquals(listOf(FavoriteChange.Delayed(null, 7)), result.notices.single().changes)
     }
 
     @Test fun `a delay on the first train of a journey announces the change at risk`() {

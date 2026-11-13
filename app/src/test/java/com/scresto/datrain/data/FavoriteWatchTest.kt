@@ -45,7 +45,14 @@ class FavoriteWatchTest {
     @Test fun `alerts are read once a day, within two days of the run`() {
         assertFalse(FavoriteWatch.needsAlerts(state, LocalDateTime.of(2026, 11, 3, 14, 0)))
         assertTrue(FavoriteWatch.needsAlerts(state, LocalDateTime.of(2026, 11, 3, 16, 0)))
-        assertFalse(FavoriteWatch.needsAlerts(state.copy(alertsDay = "2026-11-05"), at(9)))
+        assertFalse(FavoriteWatch.needsAlerts(state.copy(alertsDay = "2026-11-04"), LocalDateTime.of(2026, 11, 4, 18, 0)))
+        assertTrue(FavoriteWatch.needsAlerts(state.copy(alertsDay = "2026-11-04"), LocalDateTime.of(2026, 11, 5, 0, 10)))
+    }
+
+    @Test fun `on the day of the run, alerts are read hourly`() {
+        val read = state.copy(alertsDay = "2026-11-05", alertsAt = "2026-11-05T08:30")
+        assertFalse(FavoriteWatch.needsAlerts(read, at(9)))
+        assertTrue(FavoriteWatch.needsAlerts(read, at(9, 30)))
     }
 
     @Test fun `close to the departure, alerts are read every half hour until arrival`() {
@@ -81,21 +88,60 @@ class FavoriteWatchTest {
         assertTrue(FavoriteWatch.changes(cancelled, cancelled, at(9)).isEmpty())
     }
 
-    @Test fun `only a delay change of five minutes or more is announced`() {
-        assertTrue(FavoriteWatch.changes(state, state.copy(delayMinutes = 4), at(14)).isEmpty())
-        assertEquals(listOf(FavoriteChange.Delayed(5)), FavoriteWatch.changes(state, state.copy(delayMinutes = 5), at(14)))
-        assertEquals(listOf(FavoriteChange.Delayed(0)), FavoriteWatch.changes(state.copy(notifiedDelay = 20, delayMinutes = 20), state, at(14)))
+    @Test fun `only a delay change of three minutes or more is announced`() {
+        assertTrue(FavoriteWatch.changes(state, state.copy(delayMinutes = 2), at(14)).isEmpty())
+        assertEquals(listOf(FavoriteChange.Delayed(3, 3)), FavoriteWatch.changes(state, state.copy(delayMinutes = 3), at(14)))
+        assertEquals(listOf(FavoriteChange.Delayed(0, 0)), FavoriteWatch.changes(state.copy(notifiedDelay = 20, delayMinutes = 20), state, at(14)))
     }
 
     @Test fun `small delay changes add up, and a told delay is not repeated`() {
-        val creeping = state.copy(delayMinutes = 3)
+        val creeping = state.copy(delayMinutes = 2)
         assertTrue(FavoriteWatch.changes(state, creeping, at(14)).isEmpty())
-        val later = creeping.copy(delayMinutes = 6)
+        val later = creeping.copy(delayMinutes = 4)
         val changes = FavoriteWatch.changes(FavoriteWatch.remembered(state, creeping, emptyList()), later, at(14))
-        assertEquals(listOf(FavoriteChange.Delayed(6)), changes)
+        assertEquals(listOf(FavoriteChange.Delayed(4, 4)), changes)
         val told = FavoriteWatch.remembered(creeping, later, changes)
-        assertEquals(6, told.notifiedDelay)
-        assertTrue(FavoriteWatch.changes(told, told.copy(delayMinutes = 7), at(14)).isEmpty())
+        assertEquals(4, told.notifiedDelay)
+        assertTrue(FavoriteWatch.changes(told, told.copy(delayMinutes = 6), at(14)).isEmpty())
+    }
+
+    @Test fun `switching between a source with the arrival delay and one with the departure delay announces nothing`() {
+        val fromFeed = state.copy(delayMinutes = 6, departureDelayMinutes = 0, arrivalDelayMinutes = 6)
+        val told = FavoriteWatch.remembered(state, fromFeed, FavoriteWatch.changes(state, fromFeed, at(14)))
+        assertEquals(listOf(FavoriteChange.Delayed(0, 6)), FavoriteWatch.changes(state, fromFeed, at(14)))
+        // The departure board gives the departure delay only; the arrival one is kept.
+        val fromBoard = told.copy(delayMinutes = 0, departureDelayMinutes = 0)
+        assertTrue(FavoriteWatch.changes(told, fromBoard, at(14, 30)).isEmpty())
+    }
+
+    @Test fun `once the train has left only the arrival delay counts`() {
+        val left = state.copy(departureDelayMinutes = 2, arrivalDelayMinutes = 2, notifiedDepartureMinutes = 2, notifiedArrivalMinutes = 2)
+        assertTrue(FavoriteWatch.changes(left, left.copy(departureDelayMinutes = 9), at(15, 30)).isEmpty())
+        assertEquals(listOf(FavoriteChange.Delayed(null, 8)), FavoriteWatch.changes(left, left.copy(arrivalDelayMinutes = 8), at(15, 30)))
+    }
+
+    @Test fun `a departure delay alone is announced before leaving`() {
+        val told = state.copy(departureDelayMinutes = 0, arrivalDelayMinutes = 0)
+        assertEquals(
+            listOf(FavoriteChange.Delayed(7, 2)),
+            FavoriteWatch.changes(told, told.copy(departureDelayMinutes = 7, arrivalDelayMinutes = 2), at(14)),
+        )
+    }
+
+    @Test fun `alarms follow the estimated departure, then the trip`() {
+        val leaves = at(15, 20)
+        assertEquals(at(15, 15), DepartureAlarms.nextAlarm(listOf(at(15), leaves), at(15, 12)))
+        assertEquals(at(15, 20), DepartureAlarms.nextAlarm(listOf(at(15), leaves), at(15, 16)))
+        val trip = listOf(leaves to at(16, 10))
+        assertEquals(at(15, 35), DepartureAlarms.nextAlarm(listOf(leaves), at(15, 22), trips = trip))
+        assertEquals(at(16, 11), DepartureAlarms.nextAlarm(listOf(leaves), at(16, 6), listOf(at(16, 10)), trip))
+    }
+
+    @Test fun `delays are worded as the traveller reads them`() {
+        assertEquals("Retard : +10 min", FavoriteWatchWorker.describeDelay(10, 10))
+        assertEquals("Départ à l'heure, arrivée +6 min", FavoriteWatchWorker.describeDelay(0, 6))
+        assertEquals("Retard à l'arrivée : +8 min", FavoriteWatchWorker.describeDelay(null, 8))
+        assertEquals("De nouveau à l'heure", FavoriteWatchWorker.describeDelay(0, 0, told = true))
     }
 
     @Test fun `a delay seen on the first look is not announced later`() {
@@ -126,7 +172,7 @@ class FavoriteWatchTest {
     @Test fun `the next run taken over already cancelled or late is told`() {
         val next = WatchState("2026-11-06T15:00", "2026-11-06T16:00")
         assertEquals(listOf(FavoriteChange.Cancelled), FavoriteWatch.changes(state, next.copy(cancelled = true), at(17)))
-        assertEquals(listOf(FavoriteChange.Delayed(10)), FavoriteWatch.changes(state, next.copy(delayMinutes = 10), at(17)))
+        assertEquals(listOf(FavoriteChange.Delayed(10, 10)), FavoriteWatch.changes(state, next.copy(delayMinutes = 10), at(17)))
     }
 
     @Test fun `only new messages are announced`() {

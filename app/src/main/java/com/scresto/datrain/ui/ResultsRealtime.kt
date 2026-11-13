@@ -31,7 +31,8 @@ internal class ResultsRealtime(private val nomade: NomadeApi, private val realti
 
         var unavailable = false
         val feed: LiveFeed? = try {
-            nomade.liveFeed()
+            // An out-of-date feed counts as none: SNCF's own feed is read instead.
+            nomade.liveFeed().takeIf { it.isFresh() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: NomadeError) {

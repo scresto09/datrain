@@ -15,6 +15,7 @@ import com.scresto.datrain.data.NomadeError
 import com.scresto.datrain.data.RealtimeOverlay
 import com.scresto.datrain.data.RealtimeTrip
 import com.scresto.datrain.data.RideLeg
+import com.scresto.datrain.data.ServiceAlert
 import com.scresto.datrain.data.WatchState
 import java.time.LocalDateTime
 
@@ -41,17 +42,19 @@ internal class FavoritesLoader(
         }.sortedForDisplay()
     }
 
-    /** Throws [NomadeError] when the live feed cannot be read. */
+    /** Throws [NomadeError] when no real time can be read. */
     suspend fun live(runs: List<FavoriteRun>, now: LocalDateTime): List<FavoriteRun> {
-        val feed = nomade.liveFeed()
+        // An out-of-date feed counts as none: its trains would show as on time.
+        val feed = nomade.liveFeed().takeIf { it.isFresh() }
         // As for the results: a train missing from that feed may be in SNCF's own, read only then.
         val soon = runs.flatMap { it.late.orEmpty() + it.next.orEmpty() }.filter { ride ->
             ride.trip.departure < now.plus(REALTIME_HORIZON) && ride.trip.arrival > now.minus(REALTIME_HORIZON)
         }
-        val updates = if (soon.any { feed.find(it.trip) == null }) {
+        val updates = if (soon.any { feed?.find(it.trip) == null }) {
             try {
                 realtime.tripUpdates()
             } catch (e: NomadeError) {
+                if (feed == null) throw e
                 emptyList()
             }
         } else {
@@ -90,10 +93,11 @@ internal class FavoritesLoader(
         }
 
     /** Throws [NomadeError] when the alerts cannot be read. */
-    suspend fun messages(runs: List<FavoriteRun>): List<FavoriteRun> {
-        val alerts = alertsCache.get()
-        return runs.map { run -> run.copy(messages = run.itinerary?.let { alertsFor(it, alerts).size } ?: 0) }
-    }
+    suspend fun alerts(): List<ServiceAlert> = alertsCache.get()
+
+    /** The number of messages of each run, for the run it shows now. */
+    fun withMessages(runs: List<FavoriteRun>, alerts: List<ServiceAlert>): List<FavoriteRun> =
+        runs.map { run -> run.copy(messages = run.itinerary?.let { alertsFor(it, alerts).size } ?: 0) }
 
     /** The run a notification is about: a late one still going, otherwise the next. */
     suspend fun runToOpen(favorite: FavoriteTrain, planner: JourneyPlanner, now: LocalDateTime): List<RideLeg>? {
@@ -113,22 +117,22 @@ internal class FavoritesLoader(
     private fun savedState(favorite: FavoriteTrain): WatchState? =
         FavoriteWatchStore(context).load()[FavoriteWatch.legKeys(favorite).last()]
 
-    private fun liveRun(run: FavoriteRun, feed: LiveFeed, updates: List<RealtimeTrip>, now: LocalDateTime): FavoriteRun {
+    private fun liveRun(run: FavoriteRun, feed: LiveFeed?, updates: List<RealtimeTrip>, now: LocalDateTime): FavoriteRun {
         // Planned arrival passed, but the train is late and not there yet: it stays the one shown.
         run.late?.let { late ->
             val updated = RealtimeOverlay.apply(listOf(Itinerary(late)), feed, updates).single().rides
             // The shared rule, with SNCF's own feed as a second source for a train Train Nomade does not have.
-            val going = FavoriteRuns.stillGoing(late, feed, now)
+            val going = feed?.let { FavoriteRuns.stillGoing(late, it, now) }
                 ?: (updated != late && !Itinerary(updated).cancelled && updated.last().trip.estimatedArrival > now)
             if (going) return run.copy(rides = updated, isLive = true)
         }
-        if (!run.favorite.isJourney) {
+        if (feed != null && !run.favorite.isJourney) {
             val cancelled = FavoriteWatch.missingRun(run.favorite, run.next?.firstOrNull(), feed, now)
             if (cancelled != null) return run.copy(rides = listOf(cancelled), isLive = true)
         }
         val rides = run.next ?: return run.copy(rides = null)
         val updated = RealtimeOverlay.apply(listOf(Itinerary(rides)), feed, updates).single().rides
-        val live = rides.any { feed.find(it.trip) != null } || updated != rides
+        val live = rides.any { feed?.find(it.trip) != null } || updated != rides
         return run.copy(rides = updated, isLive = live)
     }
 }

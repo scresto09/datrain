@@ -41,12 +41,14 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
          * One pass over the watched favorites: real time, notifications, widget, next departure alarm.
          * One at a time: the periodic check, an alarm and the widget could otherwise see the same change
          * and ring twice. [force]: asked by the user, real time is read at once whatever was read lately.
+         * [fullFeed]: asked by the favorites list, the full feed it reads, so that the same delays are saved.
          */
-        suspend fun check(context: Context, force: Boolean = false) = running.withLock { checkNow(context, force) }
+        suspend fun check(context: Context, force: Boolean = false, fullFeed: Boolean = false) =
+            running.withLock { checkNow(context, force, fullFeed) }
 
         private val running = Mutex()
 
-        private suspend fun checkNow(context: Context, force: Boolean) {
+        private suspend fun checkNow(context: Context, force: Boolean, fullFeed: Boolean) {
             val history = RecentHistoryStore(context).load()
             // The widget needs every favorite watched, even with notifications off; they then stay silent.
             val widget = DatrainWidget.isPlaced(context)
@@ -66,13 +68,13 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
             // Kept two days: enough to never look twice for the same run.
             val lateChecked = store.lateChecked().filter { it.substringAfterLast('@') >= now.minusDays(1).toString() }.toSet()
             val result = FavoriteCheck.run(
-                favorites, { history.notifications && it.notify }, planner, store.load(), lateChecked, NetworkLiveSource(context), now, force,
+                favorites, { history.notifications && it.notify }, planner, store.load(), lateChecked, NetworkLiveSource(context), now, force, fullFeed,
             )
             result.notices.forEach { notify(context, it.train, it.departure, it.changes, it.opens) }
             store.save(result.states)
             store.saveLateChecked(result.lateChecked)
             DatrainWidget.refresh(context)
-            DepartureAlarms.schedule(context, result.departures, now, result.arrivals)
+            DepartureAlarms.schedule(context, result.departures, now, result.arrivals, result.trips)
         }
 
         private const val NAME = "surveillance-favoris"
@@ -108,8 +110,7 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
             val status = when {
                 state == null -> "ne circule plus dans les horaires connus"
                 state.cancelled -> "train supprimé"
-                state.delayMinutes > 0 -> "retard de ${state.delayMinutes} min"
-                else -> "à l'heure"
+                else -> describeDelay(state.departureDelay, state.arrivalDelay).replaceFirstChar { it.lowercase() }
             }
             return (listOf(status) + state?.alerts.orEmpty()).joinToString("\n")
         }
@@ -156,11 +157,26 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
             FavoriteChange.Cancelled -> "Train supprimé"
             is FavoriteChange.Removed -> "Train supprimé le ${change.departure.format(DAY)}"
             is FavoriteChange.ScheduleChanged -> "Nouvel horaire : départ à ${change.departure.format(CLOCK)}"
-            is FavoriteChange.Delayed -> if (change.minutes > 0) "Retard : +${change.minutes} min" else "De nouveau à l'heure"
+            is FavoriteChange.Delayed -> describeDelay(change.departure, change.arrival, told = true)
             is FavoriteChange.PlatformChanged -> "Changement de voie : voie ${change.platform}"
             is FavoriteChange.PlatformAnnounced -> "Voie annoncée : voie ${change.platform}"
             is FavoriteChange.NewAlert -> change.title
             is FavoriteChange.ConnectionAtRisk -> "Correspondance menacée à ${change.station} : ${change.minutes} min pour changer"
+        }
+
+        /**
+         * "Retard : +10 min" when departure and arrival agree, both otherwise; only the arrival once the
+         * train has left ([departure] null). [told]: back to on time after a delay was told.
+         */
+        internal fun describeDelay(departure: Int?, arrival: Int, told: Boolean = false): String {
+            fun part(minutes: Int) = if (minutes > 0) "+$minutes min" else "à l'heure"
+            val onTime = if (told) "De nouveau à l'heure" else "À l'heure"
+            return when {
+                departure == null -> if (arrival > 0) "Retard à l'arrivée : +$arrival min" else "$onTime à l'arrivée"
+                departure <= 0 && arrival <= 0 -> onTime
+                departure == arrival -> "Retard : +$arrival min"
+                else -> "Départ ${part(departure)}, arrivée ${part(arrival)}"
+            }
         }
 
         /** On while there is something to watch, off otherwise. */

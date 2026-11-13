@@ -25,18 +25,24 @@ import java.time.LocalDateTime
  * These alarms go off even then, without any special permission, give or take a few minutes.
  */
 object DepartureAlarms {
-    /** From two hours ahead, when many decide whether to leave, to the last quarter of an hour. */
-    private val MINUTES_BEFORE = longArrayOf(120, 90, 60, 30, 15)
+    /** From two hours ahead, when many decide whether to leave, to the departure itself, closer near the end. */
+    private val MINUTES_BEFORE = longArrayOf(120, 90, 60, 45, 30, 20, 15, 10, 5, 0)
+    /** On board, so that a delay at the arrival is told without waiting for the regular check. */
+    private const val ON_BOARD_EVERY_MINUTES = 15L
     private const val WORK_NAME = "favoris-depart"
 
     /**
      * Only the soonest alarm is set: the check it starts sets the next one. One more just after each
      * estimated arrival, so that the widget moves on to the next train without waiting for the regular check.
      */
-    fun schedule(context: Context, departures: List<LocalDateTime>, now: LocalDateTime, arrivals: List<LocalDateTime> = emptyList()) {
-        val next = (departures.flatMap { departure -> MINUTES_BEFORE.map { departure.minusMinutes(it) } } + arrivals.map { it.plusMinutes(1) })
-            .filter { it > now.plusMinutes(1) }
-            .minOrNull()
+    fun schedule(
+        context: Context,
+        departures: List<LocalDateTime>,
+        now: LocalDateTime,
+        arrivals: List<LocalDateTime> = emptyList(),
+        trips: List<Pair<LocalDateTime, LocalDateTime>> = emptyList(),
+    ) {
+        val next = nextAlarm(departures, now, arrivals, trips)
         val manager = context.getSystemService(AlarmManager::class.java)
         val intent = PendingIntent.getBroadcast(
             context, 0, Intent(context, DepartureAlarmReceiver::class.java),
@@ -47,6 +53,23 @@ object DepartureAlarms {
         } else {
             manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atZone(PARIS).toInstant().toEpochMilli(), intent)
         }
+    }
+
+    /** The soonest alarm time after [now], if any. */
+    fun nextAlarm(
+        departures: List<LocalDateTime>,
+        now: LocalDateTime,
+        arrivals: List<LocalDateTime> = emptyList(),
+        trips: List<Pair<LocalDateTime, LocalDateTime>> = emptyList(),
+    ): LocalDateTime? {
+        val onBoard = trips.flatMap { (leaves, arrives) ->
+            generateSequence(leaves.plusMinutes(ON_BOARD_EVERY_MINUTES)) { it.plusMinutes(ON_BOARD_EVERY_MINUTES) }
+                .takeWhile { it < arrives }
+                .toList()
+        }
+        return (departures.flatMap { departure -> MINUTES_BEFORE.map { departure.minusMinutes(it) } } + arrivals.map { it.plusMinutes(1) } + onBoard)
+            .filter { it > now.plusMinutes(1) }
+            .minOrNull()
     }
 
     fun cancel(context: Context) = schedule(context, emptyList(), LocalDateTime.now(PARIS))
@@ -74,6 +97,9 @@ class DepartureAlarmReceiver : BroadcastReceiver() {
             try {
                 val done = withTimeoutOrNull(ALARM_CHECK_MILLIS) { FavoriteWatchWorker.check(context.applicationContext) }
                 if (done == null) DepartureAlarms.runNow(context.applicationContext)
+            } catch (e: Exception) {
+                // Left uncaught, it would end the app. The queue tries again, and sets the next alarm when it succeeds.
+                DepartureAlarms.runNow(context.applicationContext)
             } finally {
                 pending.finish()
             }
