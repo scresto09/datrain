@@ -79,7 +79,7 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
 
         private const val NAME = "surveillance-favoris"
         private const val CHANNEL = "favoris"
-        private const val TIMETABLE_CHECK_MILLIS = 6 * 3600 * 1000L
+        private const val TIMETABLE_CHECK_MILLIS = 2 * 3600 * 1000L
         private val CLOCK = DateTimeFormatter.ofPattern("HH:mm")
         private val DAY = DateTimeFormatter.ofPattern("EEEE d MMMM", Locale.FRENCH)
 

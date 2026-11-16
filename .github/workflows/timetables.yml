@@ -1,9 +1,10 @@
 name: Timetables
 
-# After the 17:00 Paris update of IDFM, in summer and winter time.
+# Every 3 hours: SNCF publishes adapted plans (strikes, works) at varying times, often in the evening.
+# Nothing is published when the files did not change.
 on:
   schedule:
-    - cron: "30 16 * * *"
+    - cron: "15 */3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -25,6 +26,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +55,22 @@ jobs:
             --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
           cp data-licenses/ODbL-1.0.txt data-licenses/Licence-Mobilites.pdf data-licenses/SOURCES.md publication/
 
+      - name: Compare with published files
+        id: compare
+        run: |
+          # The build is reproducible: same sources, same hashes.
+          published=$(curl --fail --location --silent --show-error --retry 3 \
+            "https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/manifest.json" | jq -S .files || true)
+          built=$(jq -S .files publication/manifest.json)
+          if [ "$published" = "$built" ]; then
+            echo "Files unchanged: nothing to publish."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish files
+        if: steps.compare.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -63,16 +81,19 @@ jobs:
             publication/ODbL-1.0.txt publication/Licence-Mobilites.pdf publication/SOURCES.md
 
       - name: Prepare manifest
+        if: steps.compare.outputs.changed == 'true'
         run: |
           mkdir pages
           cp publication/manifest.json pages/manifest.json
 
       - uses: actions/upload-pages-artifact@v3
+        if: steps.compare.outputs.changed == 'true'
         with:
           path: pages
 
   deploy:
     needs: build
+    if: needs.build.outputs.changed == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

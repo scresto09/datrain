@@ -162,6 +162,12 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /** Next runs from the timetables first, then real time when one is soon. */
+    /** When coming back to the app: newer timetables, then the next runs. */
+    fun onResume() {
+        repository.refreshIfDue()
+        refreshFavorites()
+    }
+
     fun refreshFavorites() {
         favoritesJob?.cancel()
         val planner = (_state.value.timetable as? TimetableState.Ready)?.planner ?: return

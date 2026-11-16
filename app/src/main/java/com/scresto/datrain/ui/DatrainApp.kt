@@ -98,7 +98,7 @@ fun DatrainApp(
     val scope = rememberCoroutineScope()
     // The next runs change with time: they are read again when coming back to the app.
     LifecycleResumeEffect(Unit) {
-        vm.refreshFavorites()
+        vm.onResume()
         onPauseOrDispose { }
     }
     // Results and favorites stay current while on screen, not only when coming back to it.

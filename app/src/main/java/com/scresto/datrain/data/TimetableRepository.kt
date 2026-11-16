@@ -62,6 +62,11 @@ class TimetableRepository private constructor(context: Context) {
         }
     }
 
+    /** When coming back to the app: the timetables may have changed since it was opened. */
+    fun refreshIfDue() {
+        scope.launch { if (isDue(readMeta())) refresh() }
+    }
+
     /** True if timetables are usable and up to date. Also called by the background job. */
     suspend fun refresh(): Boolean = mutex.withLock {
         withContext(Dispatchers.IO) {
@@ -258,7 +263,9 @@ class TimetableRepository private constructor(context: Context) {
     companion object {
         private const val TAG = "Datrain"
         private const val MANIFEST_FORMAT = 1
-        private const val CHECK_EVERY_MILLIS = 24L * 3600 * 1000
+        // The manifest is tiny and files are only downloaded when they changed: an adapted plan
+        // published in the evening (strike) must reach the phone before the next morning.
+        private const val CHECK_EVERY_MILLIS = 2L * 3600 * 1000
         private const val SNCF_KEY = "sncf"
         private const val IDFM_KEY = "idfm"
         private const val CORRECTIONS_KEY = "corrections"
