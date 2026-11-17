@@ -69,6 +69,17 @@ class RemovedRunsTest {
         assertEquals(listOf(stillGone), kept)
     }
 
+    @Test fun `the published file reads back the same runs, and the same runs give the same file`() {
+        val published = RemovedRuns.writePublished(removed)
+        assertEquals(removed, RemovedRuns.readPublished(published))
+        assertTrue(published.contentEquals(RemovedRuns.writePublished(removed)))
+    }
+
+    @Test fun `a new install knows the published runs without old timetables`() {
+        val known = RemovedRuns.update(RemovedRuns.readPublished(RemovedRuns.writePublished(removed)), null, new, today)
+        assertEquals(removed, known)
+    }
+
     @Test fun `only days within reach are compared`() {
         val gone = TableBuilder(days = 30).apply {
             val (sl, _, st, _) = stations()

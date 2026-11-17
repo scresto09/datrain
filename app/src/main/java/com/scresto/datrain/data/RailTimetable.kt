@@ -64,6 +64,15 @@ class RailTimetable(
         fun readGzip(source: InputStream): RailTimetable =
             read(GZIPInputStream(source.buffered(), 65536).buffered(65536))
 
+        /** A published file, xz or gzip: told apart by their first bytes. */
+        fun readCompressed(source: InputStream): RailTimetable {
+            val input = java.io.BufferedInputStream(source, 65536)
+            input.mark(2)
+            val xz = input.read() == 0xFD && input.read() == 0x37
+            input.reset()
+            return if (xz) read(org.tukaani.xz.XZInputStream(input).buffered(65536)) else read(GZIPInputStream(input, 65536).buffered(65536))
+        }
+
         fun read(source: InputStream): RailTimetable {
             val input = DataInputStream(source)
             val magic = ByteArray(4).also(input::readFully)

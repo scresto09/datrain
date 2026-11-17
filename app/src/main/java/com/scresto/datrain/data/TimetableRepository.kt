@@ -120,7 +120,7 @@ class TimetableRepository private constructor(context: Context) {
 
     /** Combined file missing or in an old format: rebuild it from the files already downloaded. */
     private fun rebuild(meta: Meta): RailTimetable? = try {
-        combine(File(folder, SNCF), File(folder, IDFM), File(folder, CORRECTIONS), null, mergedFile, removedFile).also {
+        combine(local(SNCF), local(IDFM), File(folder, CORRECTIONS), File(folder, RemovedRuns.PUBLISHED), null, mergedFile, removedFile).also {
             writeMeta(meta)
         }
     } catch (e: Exception) {
@@ -131,15 +131,21 @@ class TimetableRepository private constructor(context: Context) {
         val manifest = fetchManifest()
         val previous = readMeta()
         val hashes = manifest.files.mapValues { it.value.sha256 }
-        val names = listOf(SNCF_KEY to SNCF, IDFM_KEY to IDFM, CORRECTIONS_KEY to CORRECTIONS)
+        // Xz since 0.1.9, about a quarter smaller; gzip while a manifest has no xz files.
+        val xz = SNCF.xzKey in manifest.files && IDFM.xzKey in manifest.files
+        val names = listOf(SNCF.pick(xz), IDFM.pick(xz), CORRECTIONS_KEY to CORRECTIONS)
+        if (names.any { (key, _) -> key !in manifest.files }) throw TimetableUnavailable("Horaires publiés incomplets.")
+        // Published since 0.1.9 only: a help, not required.
+        val files = names + listOf(REMOVED_KEY to RemovedRuns.PUBLISHED).filter { (key, _) -> key in manifest.files }
 
-        val changed = names.filter { (key, name) ->
-            val entry = manifest.files[key] ?: throw TimetableUnavailable("Horaires publiés incomplets.")
-            previous?.hashes?.get(key) != entry.sha256 || !File(folder, name).exists()
+        val changed = files.filter { (key, name) ->
+            previous?.hashes?.get(key) != manifest.files.getValue(key).sha256 || !File(folder, name).exists()
         }
         // Timetables the phone already has may wait for Wi-Fi, as the data mode allows: the manifest is read
         // again soon, and the files are downloaded once on Wi-Fi or once waiting is no longer acceptable.
-        val usable = previous != null && _state.value is TimetableState.Ready && names.all { (_, name) -> File(folder, name).exists() }
+        // In either format: the switch to xz may wait for Wi-Fi too.
+        val usable = previous != null && _state.value is TimetableState.Ready &&
+            local(SNCF).exists() && local(IDFM).exists() && File(folder, CORRECTIONS).exists()
         val published = runCatching { OffsetDateTime.parse(manifest.generatedAt) }.getOrNull()
         if (changed.isNotEmpty() && usable && !DataPolicy.current(appContext).mayDownloadTimetables(published, OffsetDateTime.now())) {
             writeMeta(previous!!.copy(checkedAt = System.currentTimeMillis(), pending = manifest.generatedAt))
@@ -148,7 +154,7 @@ class TimetableRepository private constructor(context: Context) {
         }
 
         val replaced = ArrayList<Pair<File, File>>()
-        for ((key, name) in names) {
+        for ((key, name) in files) {
             val entry = manifest.files.getValue(key)
             val target = File(folder, name)
             if ((key to name) in changed) {
@@ -164,12 +170,16 @@ class TimetableRepository private constructor(context: Context) {
         }
 
         fun candidate(name: String) = replaced.firstOrNull { it.second.name == name }?.first ?: File(folder, name)
+        fun candidate(source: Source) = replaced.firstOrNull { it.second.name in source.names }?.first ?: local(source)
         // The SNCF timetables being replaced: what they had and the new ones no longer have was cancelled.
-        val oldSncf = File(folder, SNCF).takeIf { it.exists() && replaced.any { (_, target) -> target.name == SNCF } }
+        val oldSncf = local(SNCF).takeIf { it.exists() && replaced.any { (_, target) -> target.name in SNCF.names } }
         val candidateMerged = File(folder, "merged.new")
         val candidateRemoved = File(folder, "$REMOVED.new")
         val table = try {
-            combine(candidate(SNCF), candidate(IDFM), candidate(CORRECTIONS), oldSncf, candidateMerged, candidateRemoved)
+            combine(
+                candidate(SNCF), candidate(IDFM), candidate(CORRECTIONS), candidate(RemovedRuns.PUBLISHED), oldSncf,
+                candidateMerged, candidateRemoved,
+            )
         } catch (e: IllegalArgumentException) {
             throw TimetableUnavailable("Mets à jour l'application pour lire les nouveaux horaires.")
         } catch (e: ZipException) {
@@ -178,7 +188,11 @@ class TimetableRepository private constructor(context: Context) {
             throw TimetableUnavailable("Horaires publiés illisibles.")
         }
 
-        replaced.forEach { (from, to) -> from.renameTo(to) }
+        replaced.forEach { (from, to) ->
+            from.renameTo(to)
+            // One format kept: the other would be read instead later.
+            listOf(SNCF, IDFM).firstOrNull { to.name in it.names }?.names?.filter { it != to.name }?.forEach { File(folder, it).delete() }
+        }
         candidateRemoved.renameTo(removedFile)
         candidateMerged.renameTo(mergedFile)
         writeMeta(meta)
@@ -236,25 +250,29 @@ class TimetableRepository private constructor(context: Context) {
     }
 
     /**
-     * Merges both sources, then adds the runs cancelled in advance: those saved before, and those [oldSncfFile]
-     * had and the new SNCF timetables no longer have. Writes [target] and [removedTarget].
+     * Merges both sources, then adds the runs cancelled in advance: those saved before, those published with
+     * the timetables ([publishedRemovedFile], for a new install), and those [oldSncfFile] had and the new SNCF
+     * timetables no longer have. Writes [target] and [removedTarget].
      */
     private fun combine(
         sncfFile: File,
         idfmFile: File,
         correctionsFile: File,
+        publishedRemovedFile: File,
         oldSncfFile: File?,
         target: File,
         removedTarget: File,
     ): RailTimetable {
         val start = System.nanoTime()
-        val sncf = sncfFile.inputStream().use(RailTimetable::readGzip)
-        val idfm = idfmFile.inputStream().use(RailTimetable::readGzip)
+        val sncf = sncfFile.inputStream().use(RailTimetable::readCompressed)
+        val idfm = idfmFile.inputStream().use(RailTimetable::readCompressed)
         val corrections = json.decodeFromString<CorrectionsDto>(correctionsFile.readText())
         val merged = TimetableMerger.merge(sncf, idfm, TimetableCorrections(corrections.sameStation))
         // Only a help: unreadable old files or saved runs mean none are known.
-        val oldSncf = oldSncfFile?.let { file -> runCatching { file.inputStream().use(RailTimetable::readGzip) }.getOrNull() }
-        val previous = runCatching { json.decodeFromString<List<RemovedRun>>(removedFile.readText()) }.getOrDefault(emptyList())
+        val oldSncf = oldSncfFile?.let { file -> runCatching { file.inputStream().use(RailTimetable::readCompressed) }.getOrNull() }
+        val saved = runCatching { json.decodeFromString<List<RemovedRun>>(removedFile.readText()) }.getOrDefault(emptyList())
+        val published = runCatching { RemovedRuns.readPublished(publishedRemovedFile.readBytes()) }.getOrDefault(emptyList())
+        val previous = saved + published
         val removed = RemovedRuns.update(previous, oldSncf, merged, LocalDate.now(PARIS))
         val table = RemovedRuns.append(merged, removed)
         removedTarget.writeText(json.encodeToString(removed))
@@ -266,6 +284,19 @@ class TimetableRepository private constructor(context: Context) {
     }
 
     @Volatile private var suburbanUntil: LocalDate? = null
+
+    /** A timetable source, published as gzip under [key] and as xz under "[key]-xz". */
+    private class Source(val key: String) {
+        val xzKey = "$key-xz"
+        val gz = "$key.bin.gz"
+        val xz = "$key.bin.xz"
+        val names = setOf(gz, xz)
+
+        fun pick(useXz: Boolean) = if (useXz) xzKey to xz else key to gz
+    }
+
+    /** The file of [source] the phone has, in whichever format it was downloaded; only one is kept. */
+    private fun local(source: Source): File = File(folder, source.xz).takeIf { it.exists() } ?: File(folder, source.gz)
 
     private fun publish(table: RailTimetable, meta: Meta) {
         val until = suburbanUntil
@@ -307,11 +338,10 @@ class TimetableRepository private constructor(context: Context) {
     companion object {
         private const val TAG = "Datrain"
         private const val MANIFEST_FORMAT = 1
-        private const val SNCF_KEY = "sncf"
-        private const val IDFM_KEY = "idfm"
+        private const val REMOVED_KEY = "removed"
         private const val CORRECTIONS_KEY = "corrections"
-        private const val SNCF = "sncf.bin.gz"
-        private const val IDFM = "idfm.bin.gz"
+        private val SNCF = Source("sncf")
+        private val IDFM = Source("idfm")
         private const val CORRECTIONS = "corrections.json"
         private const val SUBURBAN_UNTIL = "idfm-until.txt"
         private const val REMOVED = "removed.json"

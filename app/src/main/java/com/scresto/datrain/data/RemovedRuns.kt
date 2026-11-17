@@ -1,6 +1,12 @@
 package com.scresto.datrain.data
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.io.ByteArrayOutputStream
+import org.tukaani.xz.LZMA2Options
+import org.tukaani.xz.XZInputStream
+import org.tukaani.xz.XZOutputStream
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
@@ -32,6 +38,20 @@ data class RemovedRun(val number: String, val label: String, val mode: Int, val 
 object RemovedRuns {
     /** Days compared, from today: adapted plans are published a few days ahead. */
     const val DAYS_AHEAD = 14L
+
+    /** Published with the timetables, so that a new install knows them too. */
+    const val PUBLISHED = "removed.json.xz"
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /** Xz, which keeps no time: the same runs give the same file, and the same hash. */
+    fun writePublished(runs: List<RemovedRun>): ByteArray =
+        ByteArrayOutputStream().also { out ->
+            // A small dictionary: the phone needs only that much memory to read it.
+            XZOutputStream(out, LZMA2Options(6).apply { dictSize = 4 shl 20 }).use { it.write(json.encodeToString(runs).toByteArray()) }
+        }.toByteArray()
+
+    fun readPublished(data: ByteArray): List<RemovedRun> =
+        json.decodeFromString(XZInputStream(data.inputStream()).use { it.readBytes() }.toString(Charsets.UTF_8))
 
     /**
      * The runs still cancelled with the [new] timetables (without removed runs): those known before, and those

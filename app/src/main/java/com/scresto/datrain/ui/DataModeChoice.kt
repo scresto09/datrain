@@ -12,6 +12,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material3.Icon
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AlertDialogDefaults
 import androidx.compose.ui.graphics.Brush
@@ -74,7 +82,8 @@ internal fun DataModeChoice(selected: DataMode, onSelect: (DataMode) -> Unit) {
         }
         Text("En Wi-Fi, les informations sont toujours actualisées, quel que soit le mode choisi.", style = MaterialTheme.typography.bodySmall)
         Text(
-            "Consommations indicatives, variables selon le nombre de trains suivis et votre utilisation.",
+            "Les consommations de données indiquées sont des estimations. " +
+                "La consommation réelle peut varier selon le nombre de trains suivis et votre utilisation de Datrain.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -84,12 +93,26 @@ internal fun DataModeChoice(selected: DataMode, onSelect: (DataMode) -> Unit) {
 /** Before the choice, so that it is read whatever the screen size. */
 @Composable
 internal fun MobileDataWarning() {
-    Text(
-        "Attention : en dehors du Wi-Fi, Datrain utilise la connexion Internet mobile de votre téléphone. " +
-            "Selon votre forfait, cette consommation peut être décomptée de votre enveloppe Internet ou entraîner des frais supplémentaires.",
-        style = MaterialTheme.typography.bodySmall,
-        fontWeight = FontWeight.Medium,
-    )
+    // Information, as in the system settings: worth reading, not a danger.
+    val colors = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().background(colors.secondaryContainer, RoundedCornerShape(8.dp)).padding(10.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(Icons.Filled.Info, contentDescription = null, tint = colors.primary, modifier = Modifier.size(20.dp))
+        Text(
+            buildAnnotatedString {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("Bon à savoir : ") }
+                append(
+                    "en dehors du Wi-Fi, Datrain utilise la connexion Internet mobile de votre téléphone. " +
+                        "Selon votre forfait, cette consommation peut être décomptée de votre enveloppe Internet ou entraîner des frais supplémentaires.",
+                )
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.onSecondaryContainer,
+            modifier = Modifier.padding(start = 8.dp),
+        )
+    }
 }
 
 /** At the first launch, and after the update that brought the modes: closed only by choosing. */
@@ -104,7 +127,7 @@ internal fun DataModeDialog(onChosen: (DataMode) -> Unit) {
             val scroll = rememberScrollState()
             Box {
                 Column(Modifier.verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Lorsque vous n'êtes pas connecté au Wi-Fi, comment souhaitez-vous que Datrain actualise les informations sur vos trains ?")
+                Text("Comment souhaitez-vous que Datrain mette à jour les informations sur vos trains lorsque vous utilisez votre connexion mobile ?")
                 MobileDataWarning()
                 DataModeChoice(chosen) { chosen = it }
                 Text(

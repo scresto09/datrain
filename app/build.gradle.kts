@@ -23,8 +23,8 @@ android {
         minSdk = 26
         targetSdk = 36
         // Written here so that F-Droid sees each version; the tag must match: 1.2.0 -> v1.2.0, code 10200.
-        versionCode = 108
-        versionName = "0.1.8"
+        versionCode = 109
+        versionName = "0.1.9"
         // For a local test server: -PdatrainManifestUrl=http://localhost:8765/manifest.json
         val manifestUrl = providers.gradleProperty("datrainManifestUrl")
             .getOrElse("https://scresto09.github.io/datrain/manifest.json")
@@ -91,6 +91,8 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.1")
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Timetables published as xz: about a quarter smaller than gzip. Pure Java, public domain.
+    implementation("org.tukaani:xz:1.12")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
 
     testImplementation("junit:junit:4.13.2")

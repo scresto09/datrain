@@ -24,6 +24,7 @@ import gzip
 import hashlib
 import io
 import json
+import lzma
 import os
 import re
 import shutil
@@ -317,9 +318,18 @@ def write(b, trips, target):
 
     with gzip.GzipFile(target, "wb", compresslevel=9, mtime=0) as f:
         f.write(out.getvalue())
+    # Since 0.1.9, about a quarter smaller; the gzip file stays for the versions already installed.
+    # An 8 MB dictionary holds a whole file: as small as the largest one, and the phone needs only that much to read it.
+    lzma2 = {"id": lzma.FILTER_LZMA2, "preset": 9 | lzma.PRESET_EXTREME, "dict_size": 8 << 20}
+    with open(xz_name(target), "wb") as f:
+        f.write(lzma.compress(out.getvalue(), format=lzma.FORMAT_XZ, filters=[lzma2]))
     print(f"{os.path.basename(target)}: {first} -> {last}, {len(b.stations)} stations, {len(encoded)} trains, "
           f"{os.path.getsize(target) / 1e6:.2f} MB")
     return last
+
+
+def xz_name(gz_path):
+    return gz_path[: -len(".gz")] + ".xz"
 
 
 def file_entry(path, base_url):
@@ -351,6 +361,7 @@ def main():
         target = os.path.join(args.out, f"{name}.bin.gz")
         write(builder, trips, target)
         manifest["files"][name] = file_entry(target, args.base_url)
+        manifest["files"][f"{name}-xz"] = file_entry(xz_name(target), args.base_url)
 
     corrections = os.path.join(args.out, "corrections.json")
     shutil.copyfile(os.path.join(os.path.dirname(os.path.abspath(__file__)), "corrections.json"), corrections)

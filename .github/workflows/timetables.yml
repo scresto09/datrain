@@ -80,6 +80,35 @@ jobs:
             --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
           cp data-licenses/ODbL-1.0.txt data-licenses/Licence-Mobilites.pdf data-licenses/SOURCES.md publication/
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # SNCF takes trains cancelled in advance out of its timetables without a word: what the last publication
+      # had and the new one no longer has, with the app's own rule, so that new installs know them too.
+      - name: Trains cancelled in advance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p previous
+          gh release download "$RELEASE_TAG" --pattern sncf.bin.gz --pattern removed.json.xz --dir previous || true
+          DATRAIN_PUBLICATION="$PWD/publication" DATRAIN_PREVIOUS="$PWD/previous" \
+            ./gradlew --no-daemon :app:testDebugUnitTest --tests '*PublishRemovedRuns' --rerun
+          test -s publication/removed.json.xz
+          python3 - <<'PY'
+          import hashlib, json, os
+          base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{os.environ['RELEASE_TAG']}"
+          data = open("publication/removed.json.xz", "rb").read()
+          with open("publication/manifest.json", encoding="utf-8") as f:
+              manifest = json.load(f)
+          manifest["files"]["removed"] = {"url": f"{base}/removed.json.xz", "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+          with open("publication/manifest.json", "w", encoding="utf-8") as f:
+              json.dump(manifest, f, indent=2)
+          PY
+
       - name: Compare with published files
         id: compare
         run: |
@@ -102,7 +131,8 @@ jobs:
           gh release view "$RELEASE_TAG" > /dev/null 2>&1 || \
             gh release create "$RELEASE_TAG" --title "Timetables" --notes-file data-licenses/SOURCES.md
           gh release upload "$RELEASE_TAG" --clobber \
-            publication/sncf.bin.gz publication/idfm.bin.gz publication/corrections.json \
+            publication/sncf.bin.gz publication/idfm.bin.gz publication/sncf.bin.xz publication/idfm.bin.xz \
+            publication/corrections.json publication/removed.json.xz \
             publication/ODbL-1.0.txt publication/Licence-Mobilites.pdf publication/SOURCES.md
 
       - name: Prepare manifest
