@@ -3,6 +3,8 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Wi-Fi or mobile data, for the data mode. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Added by libraries but never used: no foreground service (WorkManager), no location (MapLibre). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />

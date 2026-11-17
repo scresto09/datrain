@@ -1,10 +1,10 @@
 name: Timetables
 
-# Every 3 hours: SNCF publishes adapted plans (strikes, works) at varying times, often in the evening.
-# Nothing is published when the files did not change.
+# Every hour: SNCF publishes adapted plans (strikes, works) at varying times, often in the evening.
+# Nothing is built when the sources did not change, nothing published when the files did not.
 on:
   schedule:
-    - cron: "15 */3 * * *"
+    - cron: "15 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -24,7 +24,32 @@ env:
   RELEASE_TAG: timetables
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      key: ${{ steps.sources.outputs.key }}
+      seen: ${{ steps.seen.outputs.cache-hit }}
+    steps:
+      - name: Identify sources
+        id: sources
+        run: |
+          # SNCF gives an ETag. IDFM gives nothing: it is taken as changed once a day, after its 17:00 update.
+          etag=$(curl --fail --location --silent --show-error --retry 3 --head "$SNCF_URL" \
+            | tr -d '\r' | awk -F': ' 'tolower($1) == "etag" { value = $2 } END { print value }')
+          [ -n "$etag" ] || etag="unknown-$GITHUB_RUN_ID"
+          idfm_day=$(date -u -d '-17 hours' +%F)
+          echo "key=sources-$(echo "$etag $idfm_day" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v4
+        id: seen
+        with:
+          path: .sources-seen
+          key: ${{ steps.sources.outputs.key }}
+          lookup-only: true
+
   build:
+    needs: check
+    if: needs.check.outputs.seen != 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
@@ -99,3 +124,19 @@ jobs:
       name: github-pages
     steps:
       - uses: actions/deploy-pages@v4
+
+  # Only once everything is published: a failed run is tried again at the next hour.
+  done:
+    needs: [check, build, deploy]
+    if: >-
+      always() && needs.check.outputs.seen != 'true' && needs.build.result == 'success' &&
+      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark sources as done
+        run: mkdir -p .sources-seen && touch .sources-seen/done
+
+      - uses: actions/cache/save@v4
+        with:
+          path: .sources-seen
+          key: ${{ needs.check.outputs.key }}

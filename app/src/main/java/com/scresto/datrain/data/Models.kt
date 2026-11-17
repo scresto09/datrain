@@ -18,6 +18,8 @@ data class Trip(
     val arrivalDelayMinutes: Int = 0,
     val platform: String? = null,
     val cancelled: Boolean = false,
+    /** Taken out of the timetables after being published: cancelled in advance, whatever real time says. */
+    val removed: Boolean = false,
     /** Changes to the train's route, such as an exceptional terminus. */
     val serviceNotes: List<String> = emptyList(),
     val fromKey: String = "",

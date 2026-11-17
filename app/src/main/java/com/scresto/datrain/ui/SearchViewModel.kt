@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.scresto.datrain.data.AlertsCache
 import com.scresto.datrain.data.ServiceAlert
 import com.scresto.datrain.data.CancelledQuery
+import com.scresto.datrain.data.DataMode
+import com.scresto.datrain.data.WifiCatchUpWorker
 import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.FavoriteWatchWorker
 import com.scresto.datrain.data.GtfsRealtimeApi
@@ -125,6 +127,17 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
     fun setNotifications(enabled: Boolean) {
         updateRecent { it.copy(notifications = enabled) }
         syncWatch()
+    }
+
+    fun setDataMode(mode: DataMode) {
+        updateRecent { it.withDataMode(mode) }
+        if (mode == DataMode.REACTIVE) WifiCatchUpWorker.cancel(getApplication())
+    }
+
+    fun setFavoriteDays(train: FavoriteTrain, days: List<Int>) {
+        updateRecent { it.withFavoriteDays(train, days) }
+        syncWatch()
+        refreshFavorites()
     }
 
     fun setFavoriteNotify(train: FavoriteTrain, notify: Boolean) {

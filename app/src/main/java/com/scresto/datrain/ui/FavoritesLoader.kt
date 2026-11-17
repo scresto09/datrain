@@ -48,7 +48,7 @@ internal class FavoritesLoader(
         val feed = nomade.liveFeed().takeIf { it.isFresh() }
         // As for the results: a train missing from that feed may be in SNCF's own, read only then.
         val soon = runs.flatMap { it.late.orEmpty() + it.next.orEmpty() }.filter { ride ->
-            ride.trip.departure < now.plus(REALTIME_HORIZON) && ride.trip.arrival > now.minus(REALTIME_HORIZON)
+            !ride.trip.removed && ride.trip.departure < now.plus(REALTIME_HORIZON) && ride.trip.arrival > now.minus(REALTIME_HORIZON)
         }
         val updates = if (soon.any { feed?.find(it.trip) == null }) {
             try {

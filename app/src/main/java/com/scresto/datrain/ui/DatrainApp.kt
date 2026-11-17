@@ -49,6 +49,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.scresto.datrain.R
+import com.scresto.datrain.data.DataMode
 import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.PARIS
 import com.scresto.datrain.data.StationGroups
@@ -82,9 +83,10 @@ fun DatrainApp(
             permission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
+    // A new favorite asks first which days the traveller takes it; the same dialog changes them later.
+    var daysFor by remember { mutableStateOf<Pair<FavoriteTrain, Boolean>?>(null) }
     val toggleFavorite = { train: FavoriteTrain ->
-        if (!state.recent.isFavorite(train) && state.recent.notifications) askNotifications()
-        vm.toggleFavorite(train)
+        if (state.recent.isFavorite(train)) vm.toggleFavorite(train) else daysFor = train to true
     }
     // The timetables may still be loading when a notification opens the app.
     LaunchedEffect(openedFavorite, state.timetable is TimetableState.Ready) {
@@ -113,12 +115,27 @@ fun DatrainApp(
     }
 
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+        daysFor?.let { (train, adding) ->
+            val running = remember(train.key, state.timetable) {
+                (state.timetable as? TimetableState.Ready)?.planner?.runningDays(train).orEmpty()
+            }
+            FavoriteDaysDialog(train, running, adding, onDismiss = { daysFor = null }) { days ->
+                daysFor = null
+                if (adding) {
+                    if (state.recent.notifications) askNotifications()
+                    vm.addFavorite(train.copy(days = days))
+                } else {
+                    vm.setFavoriteDays(train, days)
+                }
+            }
+        }
         state.trackedTrip?.let { trip ->
             // Opened from a journey with changes, the star is the whole journey's.
             val favorite = if (state.trackedJourney.size > 1) FavoriteTrain.of(state.trackedJourney) else FavoriteTrain.of(trip)
             // Found by its number, the train has no stations of the traveller's: they are asked for first.
             val byNumber = state.trackedJourney.size <= 1 && trip.fromKey.isEmpty()
             val numberFavorite = if (byNumber) state.recent.favorites.firstOrNull { !it.isJourney && it.number == trip.number } else null
+            val savedFavorite = numberFavorite ?: favorite?.let { f -> state.recent.favorites.firstOrNull { it.isSameAs(f) } }
             var pickStations by rememberSaveable { mutableStateOf(false) }
             if (pickStations) {
                 FavoriteStationsDialog(trip, onDismiss = { pickStations = false }) { chosen ->
@@ -135,6 +152,8 @@ fun DatrainApp(
                     vm.refreshFavorites()
                 },
                 isFavorite = if (byNumber) numberFavorite != null else favorite != null && state.recent.isFavorite(favorite),
+                onDays = savedFavorite?.let { saved -> { daysFor = saved to false } },
+                daysRestricted = savedFavorite?.days?.isNotEmpty() == true,
                 onToggleFavorite = when {
                     numberFavorite != null -> { { vm.removeFavorite(numberFavorite) } }
                     byNumber -> { { pickStations = true } }
@@ -152,6 +171,7 @@ fun DatrainApp(
             return@MaterialTheme
         }
         BackHandler(enabled = state.hasSearched, onBack = vm::clearResults)
+        if (state.recent.dataMode == null) DataModeDialog(vm::setDataMode)
         if (showAbout) {
             AboutDialog(
                 notifications = state.recent.notifications,
@@ -159,6 +179,8 @@ fun DatrainApp(
                     if (enabled) askNotifications()
                     vm.setNotifications(enabled)
                 },
+                dataMode = state.recent.dataMode ?: DataMode.REACTIVE,
+                onDataMode = vm::setDataMode,
                 onSources = {
                     showAbout = false
                     vm.showSources(true)
@@ -220,6 +242,7 @@ fun DatrainApp(
                             onOpen = { it.rides?.let(vm::openRun) },
                             showBell = state.recent.notifications,
                             onBell = { vm.setFavoriteNotify(run.favorite, !run.favorite.notify) },
+                            onDays = { daysFor = run.favorite to false },
                             onRemove = {
                                 vm.removeFavorite(run.favorite)
                                 scope.launch {

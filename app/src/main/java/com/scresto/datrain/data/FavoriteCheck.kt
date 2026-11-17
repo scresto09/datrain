@@ -46,6 +46,8 @@ object FavoriteCheck {
         now: LocalDateTime,
         force: Boolean = false,
         fullFeed: Boolean = false,
+        /** Data mode and network allow frequent reads: see [DataPolicy.generous]. */
+        generous: Boolean = true,
     ): CheckResult {
         val states = saved.toMutableMap()
         val checked = lateChecked.toMutableSet()
@@ -75,12 +77,14 @@ object FavoriteCheck {
             // Arrived, or unknown to the feed: not looked for again. A run still going is followed by its state.
             if (feed != null && rides !== late) checked += lateId!!
             rides?.firstOrNull()?.let { departures += it.trip.departure }
+            // A run on a day the traveller no longer takes it was not removed: it is simply forgotten.
+            val forgotten = states[FavoriteWatch.legKeys(favorite).first()]?.let { !favorite.takenOn(it.departureTime.dayOfWeek) } == true
             // A journey is watched train by train, then its changes.
             val legStates = favorite.legs.mapIndexed { i, leg ->
                 val key = FavoriteWatch.legKeys(favorite)[i]
-                val old = states[key]
+                val old = states[key]?.takeUnless { forgotten }
                 val state = try {
-                    read(leg, old, rides?.getOrNull(i), live, now, force, fullFeed)
+                    read(leg, old, rides?.getOrNull(i), live, now, force, fullFeed, generous)
                 } catch (e: NomadeError) {
                     null
                 } catch (e: IOException) {
@@ -123,20 +127,44 @@ object FavoriteCheck {
         now: LocalDateTime,
         force: Boolean = false,
         fullFeed: Boolean = false,
+        generous: Boolean = true,
     ): WatchState? {
+        if (ride != null && ride.trip.removed) {
+            val known = FavoriteWatch.stateFor(ride, old).let { if (it.removed) it else it.copy(removed = true, cancelled = true) }
+            // Cancelled in advance: only its departure board can show it running after all. Messages still count,
+            // such as a strike notice. Once seen running, it is followed as any train.
+            if (known.cancelled) return withAlerts(confirmRemoved(known, favorite, ride, live, now), ride, live, now, force, generous)
+            return follow(known, favorite, ride, live, now, force, fullFeed, generous)
+        }
         val cancelled = if (old == null) FavoriteWatch.cancelledRun(favorite, ride, live.feed(), now) else null
         if (cancelled != null) return FavoriteWatch.stateFor(cancelled, null).copy(cancelled = true)
         // No run left at all: the expected one is gone.
         if (ride == null) return if (old != null && old.arrivalTime > now) old.copy(cancelled = true) else null
-        var state = FavoriteWatch.stateFor(ride, old)
+        // Back in the timetables: no longer cancelled in advance.
+        var state = FavoriteWatch.stateFor(ride, old).let { if (it.removed) it.copy(removed = false, cancelled = false) else it }
         // First look at a run that leaves within hours, or is already going (a late one after its planned
         // arrival included): its delay from the live feed at once, rather than none.
         val firstLook = old == null || old.date != state.date
         if (firstLook && now >= state.departureTime.minus(LiveFeed.HORIZON) && live.feed().find(ride.trip) != null) {
             state = FavoriteWatch.withFeed(state, live.feed(), ride).copy(fullAt = now.toString())
         }
+        return follow(state, favorite, ride, live, now, force, fullFeed, generous)
+    }
+
+    /** Real time when due, then messages. */
+    private suspend fun follow(
+        start: WatchState,
+        favorite: FavoriteTrain,
+        ride: RideLeg,
+        live: LiveSource,
+        now: LocalDateTime,
+        force: Boolean,
+        fullFeed: Boolean,
+        generous: Boolean,
+    ): WatchState {
+        var state = start
         try {
-            when (FavoriteWatch.liveCheck(state, now, force)) {
+            when (FavoriteWatch.liveCheck(state, now, force, generous)) {
                 LiveCheck.NONE -> Unit
                 LiveCheck.FULL_FEED -> state = withLive(state, live, ride).copy(fullAt = now.toString())
                 LiveCheck.STATION_BOARD -> state = if (fullFeed) {
@@ -145,17 +173,48 @@ object FavoriteCheck {
                     withBoards(state, favorite, ride, live, now)
                 }
             }
-            if (FavoriteWatch.needsAlerts(state, now, force)) {
-                val alerts = TrainAlerts.of(live.alerts(), ride.trip)
-                val titles = alerts.train + alerts.byStation[ride.trip.fromKey].orEmpty() + alerts.byStation[ride.trip.toKey].orEmpty()
-                state = state.copy(alerts = titles.map { it.title }.toSet(), alertsDay = now.toLocalDate().toString(), alertsAt = now.toString())
-            }
         } catch (e: NomadeError) {
             // Next time: this check is simply skipped.
+            return state
         } catch (e: IOException) {
             // Same.
+            return state
         }
-        return state
+        return withAlerts(state, ride, live, now, force, generous)
+    }
+
+    /**
+     * A run cancelled in advance, from the time its departure board can show it until its planned arrival:
+     * a passage at its planned time, not cancelled, says it runs after all. A light read, never the full feed.
+     */
+    private suspend fun confirmRemoved(state: WatchState, favorite: FavoriteTrain, ride: RideLeg, live: LiveSource, now: LocalDateTime): WatchState {
+        if (now < state.departureTime.minus(Board.HORIZON) || now >= state.arrivalTime) return state
+        val uic = ride.trip.fromKey.toIntOrNull() ?: favorite.fromUic
+        if (uic == 0) return state
+        val board = orNull { live.board(uic) } ?: return state
+        val read = FavoriteWatch.withBoard(state, board, ride, boarding = true, now.atZone(PARIS).toOffsetDateTime()) ?: return state
+        return if (read.cancelled) state else read
+    }
+
+    /** The run's messages, when due; [state] as it is when they cannot be read. */
+    private suspend fun withAlerts(
+        state: WatchState,
+        ride: RideLeg,
+        live: LiveSource,
+        now: LocalDateTime,
+        force: Boolean,
+        generous: Boolean,
+    ): WatchState {
+        if (!FavoriteWatch.needsAlerts(state, now, force, generous)) return state
+        return try {
+            val alerts = TrainAlerts.of(live.alerts(), ride.trip)
+            val titles = alerts.train + alerts.byStation[ride.trip.fromKey].orEmpty() + alerts.byStation[ride.trip.toKey].orEmpty()
+            state.copy(alerts = titles.map { it.title }.toSet(), alertsDay = now.toLocalDate().toString(), alertsAt = now.toString())
+        } catch (e: NomadeError) {
+            state
+        } catch (e: IOException) {
+            state
+        }
     }
 
     /**

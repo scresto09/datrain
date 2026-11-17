@@ -36,9 +36,16 @@ class RailTimetable(
     /** Position in [times] of each trip's first stop. Each stop takes two values: arrival, departure. */
     val tripOffset: IntArray,
     val times: IntArray,
+    /**
+     * Trips from here on were taken out of the timetables after being published: cancelled in advance.
+     * They are kept, on their former days only, so that every screen can show them as cancelled.
+     */
+    val firstRemoved: Int = tripPattern.size,
 ) {
     val stationCount get() = stationNames.size
     val tripCount get() = tripPattern.size
+
+    fun isRemoved(trip: Int): Boolean = trip >= firstRemoved
     val lastDate: LocalDate get() = firstDate.plusDays(dayCount - 1L)
 
     fun runsOn(trip: Int, dayIndex: Int): Boolean {

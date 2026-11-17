@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -105,6 +106,10 @@ fun TrainMapScreen(
     onBack: () -> Unit,
     isFavorite: Boolean,
     onToggleFavorite: (() -> Unit)?,
+    /** For a favorite: the days the traveller takes it. */
+    onDays: (() -> Unit)? = null,
+    /** Taken on some days only: the icon then stands out. */
+    daysRestricted: Boolean = false,
     journey: List<Trip> = emptyList(),
     onSwitch: (Trip) -> Unit = {},
     vm: TrainMapViewModel = viewModel(),
@@ -182,7 +187,18 @@ fun TrainMapScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour")
                     }
                 },
-                actions = { onToggleFavorite?.let { FavoriteStar(isFavorite, it) } },
+                actions = {
+                    onDays?.let {
+                        IconButton(onClick = it) {
+                            Icon(
+                                Icons.Filled.DateRange,
+                                contentDescription = if (daysRestricted) "Jours suivis : certains jours" else "Jours suivis : tous les jours",
+                                tint = if (daysRestricted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    onToggleFavorite?.let { FavoriteStar(isFavorite, it) }
+                },
             )
         },
     ) { padding ->

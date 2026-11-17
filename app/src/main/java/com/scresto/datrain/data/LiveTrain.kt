@@ -46,7 +46,7 @@ data class LiveTrain(
         val last = stops.indexOfLast { !it.removed }
         if (first < 0) return emptyList()
         return buildList {
-            if (first > 0) add(origin?.let { "Origine exceptionnelle : $it" } ?: "Origine exceptionnelle")
+            if (first > 0) add(origin?.let { "Départ exceptionnel : $it" } ?: "Départ exceptionnel")
             if (last < stops.lastIndex) add(destination?.let { "Terminus exceptionnel : $it" } ?: "Terminus exceptionnel")
             val skipped = stops.subList(first, last + 1).count { it.removed }
             if (skipped == 1) add("1 arrêt supprimé sur le parcours")
@@ -76,7 +76,18 @@ data class LiveFeed(val collectedAt: OffsetDateTime, val staleAfter: OffsetDateT
         val same = matching(ofNumber.filter { it.serviceDate == trip.serviceDate && !it.isCopy }, seconds)
         val copy = matching(ofNumber.filter { it.serviceDate == trip.serviceDate.plusDays(1) && it.isCopy }, seconds - DAY)
             ?.backTo(trip.serviceDate)
-        return listOfNotNull(same, copy).maxByOrNull { it.updatedAt }
+        return listOfNotNull(same, copy).maxByOrNull { it.updatedAt }?.takeIf { !trip.removed || it.isRunOf(trip, seconds) }
+    }
+
+    /**
+     * For a run cancelled in advance, its number may now belong to another run that day, shortened or moved:
+     * only a train at its boarding station at its planned time, then at its alighting station, is that run.
+     */
+    private fun LiveTrain.isRunOf(trip: Trip, seconds: Int): Boolean {
+        val from = trip.fromKey.ifEmpty { trip.plannedStops.firstOrNull()?.uic.orEmpty() }
+        val to = trip.toKey.ifEmpty { trip.plannedStops.lastOrNull()?.uic.orEmpty() }
+        val boarding = stops.indexOfFirst { it.uic == from && !it.removed && it.departureSeconds == seconds }
+        return boarding >= 0 && (boarding + 1 until stops.size).any { stops[it].uic == to && !stops[it].removed }
     }
 
     /**

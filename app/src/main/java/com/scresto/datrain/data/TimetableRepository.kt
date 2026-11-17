@@ -42,6 +42,7 @@ data class TimetableInfo(val generatedAt: OffsetDateTime?, val suburbanUntil: Lo
  * and never replaces valid timetables with a damaged file.
  */
 class TimetableRepository private constructor(context: Context) {
+    private val appContext = context.applicationContext
     private val folder = File(context.applicationContext.filesDir, "timetable").apply { mkdirs() }
     private val client: OkHttpClient = Http.client(context)
     private val mutex = Mutex()
@@ -53,6 +54,7 @@ class TimetableRepository private constructor(context: Context) {
 
     private val metaFile get() = File(folder, "meta.json")
     private val mergedFile get() = File(folder, "merged.bin")
+    private val removedFile get() = File(folder, REMOVED)
 
     /** When the app opens: reload what is there, then check without blocking. */
     fun start() {
@@ -64,7 +66,12 @@ class TimetableRepository private constructor(context: Context) {
 
     /** When coming back to the app: the timetables may have changed since it was opened. */
     fun refreshIfDue() {
-        scope.launch { if (isDue(readMeta())) refresh() }
+        scope.launch { refreshWhenDue() }
+    }
+
+    /** Reads the manifest again if the data mode says it is time. */
+    suspend fun refreshWhenDue() {
+        if (isDue(readMeta())) refresh()
     }
 
     /** True if timetables are usable and up to date. Also called by the background job. */
@@ -87,11 +94,6 @@ class TimetableRepository private constructor(context: Context) {
         }
     }
 
-    suspend fun refreshIfOlderThan(millis: Long) {
-        val meta = readMeta()
-        if (meta == null || System.currentTimeMillis() - meta.checkedAt > millis) refresh()
-    }
-
     /** For background work, where the app may not have started. */
     suspend fun plannerOrNull(): JourneyPlanner? {
         (_state.value as? TimetableState.Ready)?.let { return it.planner }
@@ -104,7 +106,8 @@ class TimetableRepository private constructor(context: Context) {
     }
 
     private fun isDue(meta: Meta?): Boolean =
-        meta == null || System.currentTimeMillis() - meta.checkedAt > CHECK_EVERY_MILLIS
+        meta == null ||
+            System.currentTimeMillis() - meta.checkedAt > DataPolicy.current(appContext).timetableCheckEvery(meta.pending != null).toMillis()
 
     private fun loadSaved(): Boolean {
         val meta = readMeta() ?: return false
@@ -117,7 +120,7 @@ class TimetableRepository private constructor(context: Context) {
 
     /** Combined file missing or in an old format: rebuild it from the files already downloaded. */
     private fun rebuild(meta: Meta): RailTimetable? = try {
-        combine(File(folder, SNCF), File(folder, IDFM), File(folder, CORRECTIONS), mergedFile).also {
+        combine(File(folder, SNCF), File(folder, IDFM), File(folder, CORRECTIONS), null, mergedFile, removedFile).also {
             writeMeta(meta)
         }
     } catch (e: Exception) {
@@ -130,11 +133,25 @@ class TimetableRepository private constructor(context: Context) {
         val hashes = manifest.files.mapValues { it.value.sha256 }
         val names = listOf(SNCF_KEY to SNCF, IDFM_KEY to IDFM, CORRECTIONS_KEY to CORRECTIONS)
 
+        val changed = names.filter { (key, name) ->
+            val entry = manifest.files[key] ?: throw TimetableUnavailable("Horaires publiés incomplets.")
+            previous?.hashes?.get(key) != entry.sha256 || !File(folder, name).exists()
+        }
+        // Timetables the phone already has may wait for Wi-Fi, as the data mode allows: the manifest is read
+        // again soon, and the files are downloaded once on Wi-Fi or once waiting is no longer acceptable.
+        val usable = previous != null && _state.value is TimetableState.Ready && names.all { (_, name) -> File(folder, name).exists() }
+        val published = runCatching { OffsetDateTime.parse(manifest.generatedAt) }.getOrNull()
+        if (changed.isNotEmpty() && usable && !DataPolicy.current(appContext).mayDownloadTimetables(published, OffsetDateTime.now())) {
+            writeMeta(previous!!.copy(checkedAt = System.currentTimeMillis(), pending = manifest.generatedAt))
+            WifiCatchUpWorker.schedule(appContext)
+            return
+        }
+
         val replaced = ArrayList<Pair<File, File>>()
         for ((key, name) in names) {
-            val entry = manifest.files[key] ?: throw TimetableUnavailable("Horaires publiés incomplets.")
+            val entry = manifest.files.getValue(key)
             val target = File(folder, name)
-            if (previous?.hashes?.get(key) != entry.sha256 || !target.exists()) {
+            if ((key to name) in changed) {
                 val temporary = File(folder, "$name.new")
                 download(entry, temporary)
                 replaced += temporary to target
@@ -147,9 +164,12 @@ class TimetableRepository private constructor(context: Context) {
         }
 
         fun candidate(name: String) = replaced.firstOrNull { it.second.name == name }?.first ?: File(folder, name)
+        // The SNCF timetables being replaced: what they had and the new ones no longer have was cancelled.
+        val oldSncf = File(folder, SNCF).takeIf { it.exists() && replaced.any { (_, target) -> target.name == SNCF } }
         val candidateMerged = File(folder, "merged.new")
+        val candidateRemoved = File(folder, "$REMOVED.new")
         val table = try {
-            combine(candidate(SNCF), candidate(IDFM), candidate(CORRECTIONS), candidateMerged)
+            combine(candidate(SNCF), candidate(IDFM), candidate(CORRECTIONS), oldSncf, candidateMerged, candidateRemoved)
         } catch (e: IllegalArgumentException) {
             throw TimetableUnavailable("Mets à jour l'application pour lire les nouveaux horaires.")
         } catch (e: ZipException) {
@@ -159,6 +179,7 @@ class TimetableRepository private constructor(context: Context) {
         }
 
         replaced.forEach { (from, to) -> from.renameTo(to) }
+        candidateRemoved.renameTo(removedFile)
         candidateMerged.renameTo(mergedFile)
         writeMeta(meta)
         publish(table, meta)
@@ -214,17 +235,34 @@ class TimetableRepository private constructor(context: Context) {
         }
     }
 
-    private fun combine(sncfFile: File, idfmFile: File, correctionsFile: File, target: File): RailTimetable {
+    /**
+     * Merges both sources, then adds the runs cancelled in advance: those saved before, and those [oldSncfFile]
+     * had and the new SNCF timetables no longer have. Writes [target] and [removedTarget].
+     */
+    private fun combine(
+        sncfFile: File,
+        idfmFile: File,
+        correctionsFile: File,
+        oldSncfFile: File?,
+        target: File,
+        removedTarget: File,
+    ): RailTimetable {
         val start = System.nanoTime()
         val sncf = sncfFile.inputStream().use(RailTimetable::readGzip)
         val idfm = idfmFile.inputStream().use(RailTimetable::readGzip)
         val corrections = json.decodeFromString<CorrectionsDto>(correctionsFile.readText())
         val merged = TimetableMerger.merge(sncf, idfm, TimetableCorrections(corrections.sameStation))
-        TimetableCache.write(merged, target)
-        Log.i(TAG, "Timetables merged in ${(System.nanoTime() - start) / 1_000_000} ms")
+        // Only a help: unreadable old files or saved runs mean none are known.
+        val oldSncf = oldSncfFile?.let { file -> runCatching { file.inputStream().use(RailTimetable::readGzip) }.getOrNull() }
+        val previous = runCatching { json.decodeFromString<List<RemovedRun>>(removedFile.readText()) }.getOrDefault(emptyList())
+        val removed = RemovedRuns.update(previous, oldSncf, merged, LocalDate.now(PARIS))
+        val table = RemovedRuns.append(merged, removed)
+        removedTarget.writeText(json.encodeToString(removed))
+        TimetableCache.write(table, target)
+        Log.i(TAG, "Timetables merged in ${(System.nanoTime() - start) / 1_000_000} ms, ${removed.size} runs cancelled in advance")
         suburbanUntil = idfm.lastDate
         File(folder, SUBURBAN_UNTIL).writeText(idfm.lastDate.toString())
-        return merged
+        return table
     }
 
     @Volatile private var suburbanUntil: LocalDate? = null
@@ -255,7 +293,13 @@ class TimetableRepository private constructor(context: Context) {
     private data class ManifestFile(val url: String, val sha256: String, val size: Long = 0)
 
     @Serializable
-    private data class Meta(val generatedAt: String, val hashes: Map<String, String>, val checkedAt: Long)
+    private data class Meta(
+        val generatedAt: String,
+        val hashes: Map<String, String>,
+        val checkedAt: Long,
+        /** Newer timetables published at that time, not downloaded yet: waiting for Wi-Fi. */
+        val pending: String? = null,
+    )
 
     @Serializable
     private data class CorrectionsDto(val sameStation: Map<String, String> = emptyMap())
@@ -263,9 +307,6 @@ class TimetableRepository private constructor(context: Context) {
     companion object {
         private const val TAG = "Datrain"
         private const val MANIFEST_FORMAT = 1
-        // The manifest is tiny and files are only downloaded when they changed: an adapted plan
-        // published in the evening (strike) must reach the phone before the next morning.
-        private const val CHECK_EVERY_MILLIS = 2L * 3600 * 1000
         private const val SNCF_KEY = "sncf"
         private const val IDFM_KEY = "idfm"
         private const val CORRECTIONS_KEY = "corrections"
@@ -273,6 +314,7 @@ class TimetableRepository private constructor(context: Context) {
         private const val IDFM = "idfm.bin.gz"
         private const val CORRECTIONS = "corrections.json"
         private const val SUBURBAN_UNTIL = "idfm-until.txt"
+        private const val REMOVED = "removed.json"
 
         @Volatile private var instance: TimetableRepository? = null
 

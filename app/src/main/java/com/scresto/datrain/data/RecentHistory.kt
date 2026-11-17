@@ -38,12 +38,18 @@ data class FavoriteTrain(
     val notify: Boolean = true,
     /** The trains taken after this one, for a journey with changes. */
     val connections: List<FavoriteTrain> = emptyList(),
+    /** Days of the week the traveller takes it, 1 for Monday to 7 for Sunday; empty for every day it runs. */
+    val days: List<Int> = emptyList(),
 ) {
+    /** Whether a run leaving on [day] concerns the traveller. */
+    fun takenOn(day: java.time.DayOfWeek): Boolean = days.isEmpty() || day.value in days
+
     /** One train alone keeps the key it had before journeys existed. */
     val key: String get() = legs.joinToString(">") { "${it.number}|${it.fromName}|${it.toName}" }
 
     /** Every train of the favorite, this one first. */
-    val legs: List<FavoriteTrain> get() = listOf(copy(connections = emptyList())) + connections
+    /** Each with the journey's days: they are those of its first train's departure. */
+    val legs: List<FavoriteTrain> get() = listOf(copy(connections = emptyList())) + connections.map { it.copy(days = days) }
 
     val isJourney: Boolean get() = connections.isNotEmpty()
 
@@ -130,6 +136,8 @@ data class RecentHistory(
     val notifications: Boolean = true,
     /** The time is typed on the keyboard rather than chosen on the dial. */
     val typeTime: Boolean = false,
+    /** Null until chosen: the app then asks, and works as [DataMode.REACTIVE] meanwhile. */
+    val dataMode: DataMode? = null,
 ) {
     fun adding(from: Station, to: Station): RecentHistory {
         val start = RecentStation(from.name, from.uic)
@@ -152,6 +160,12 @@ data class RecentHistory(
 
     fun withFavoriteNotify(train: FavoriteTrain, notify: Boolean) = copy(
         favorites = favorites.map { if (it.isSameAs(train)) it.copy(notify = notify) else it },
+    )
+
+    fun withDataMode(mode: DataMode) = copy(dataMode = mode)
+
+    fun withFavoriteDays(train: FavoriteTrain, days: List<Int>) = copy(
+        favorites = favorites.map { if (it.isSameAs(train)) it.copy(days = days.sorted()) else it },
     )
 
     fun addingNumber(number: String) = copy(numbers = (listOf(number) + numbers).distinct().take(MAX_NUMBERS))

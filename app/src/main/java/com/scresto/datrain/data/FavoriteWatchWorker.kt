@@ -59,16 +59,20 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
             }
 
             val repository = TimetableRepository.get(context)
-            // The manifest is tiny; files are only downloaded when they changed.
-            repository.refreshIfOlderThan(TIMETABLE_CHECK_MILLIS)
+            // The manifest is tiny; files are only downloaded when they changed, and as the data mode allows.
+            repository.refreshWhenDue()
             val planner = repository.plannerOrNull() ?: return
 
             val store = FavoriteWatchStore(context)
             val now = LocalDateTime.now(PARIS)
             // Kept two days: enough to never look twice for the same run.
             val lateChecked = store.lateChecked().filter { it.substringAfterLast('@') >= now.minusDays(1).toString() }.toSet()
+            val policy = DataPolicy.current(context)
+            // Put off on mobile data: caught up as soon as the phone is on Wi-Fi.
+            if (!policy.generous) WifiCatchUpWorker.schedule(context)
             val result = FavoriteCheck.run(
                 favorites, { history.notifications && it.notify }, planner, store.load(), lateChecked, NetworkLiveSource(context), now, force, fullFeed,
+                policy.generous,
             )
             result.notices.forEach { notify(context, it.train, it.departure, it.changes, it.opens) }
             store.save(result.states)
@@ -79,7 +83,6 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
 
         private const val NAME = "surveillance-favoris"
         private const val CHANNEL = "favoris"
-        private const val TIMETABLE_CHECK_MILLIS = 2 * 3600 * 1000L
         private val CLOCK = DateTimeFormatter.ofPattern("HH:mm")
         private val DAY = DateTimeFormatter.ofPattern("EEEE d MMMM", Locale.FRENCH)
 
@@ -155,6 +158,7 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
 
         private fun describe(change: FavoriteChange): String = when (change) {
             FavoriteChange.Cancelled -> "Train supprimé"
+            FavoriteChange.Restored -> "Train rétabli"
             is FavoriteChange.Removed -> "Train supprimé le ${change.departure.format(DAY)}"
             is FavoriteChange.ScheduleChanged -> "Nouvel horaire : départ à ${change.departure.format(CLOCK)}"
             is FavoriteChange.Delayed -> describeDelay(change.departure, change.arrival, told = true)

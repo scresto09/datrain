@@ -109,7 +109,7 @@ class StopRowsTest {
     }
 
     @Test fun `removed first or middle stops are told too`() {
-        assertEquals(listOf("Origine exceptionnelle : Beta"), liveTrain(listOf(stops[0].copy(removed = true), stops[1], stops[2])).serviceNotes())
+        assertEquals(listOf("Départ exceptionnel : Beta"), liveTrain(listOf(stops[0].copy(removed = true), stops[1], stops[2])).serviceNotes())
         assertEquals(listOf("1 arrêt supprimé sur le parcours"), liveTrain(listOf(stops[0], stops[1].copy(removed = true), stops[2])).serviceNotes())
     }
 

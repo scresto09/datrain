@@ -28,6 +28,8 @@ data class WatchState(
     val alertsAt: String = "",
     /** In a journey, the change before this train was already reported at risk. */
     val connectionWarned: Boolean = false,
+    /** The run left the timetables: cancelled unless real time shows it running after all. */
+    val removed: Boolean = false,
     /** Delays at the traveller's own departure and arrival stations, when read; otherwise [delayMinutes]. */
     val departureDelayMinutes: Int? = null,
     val arrivalDelayMinutes: Int? = null,
@@ -50,6 +52,8 @@ data class WatchState(
 
 sealed interface FavoriteChange {
     data object Cancelled : FavoriteChange
+    /** Cancelled before, running again. */
+    data object Restored : FavoriteChange
     /** The run left the timetables: this is how cancellations known in advance show up. */
     data class Removed(val departure: LocalDateTime) : FavoriteChange
     data class ScheduleChanged(val departure: LocalDateTime) : FavoriteChange
@@ -80,8 +84,9 @@ object FavoriteWatch {
     /**
      * The light station board covers about 3 hours, the heavy full feed about 6, and is used only once.
      * [force]: a refresh asked by the user reads what it can at once, whatever was read lately.
+     * Not [generous] (sparing mode on mobile data), the full feed only once per run before the boards take over.
      */
-    fun liveCheck(state: WatchState, now: LocalDateTime, force: Boolean = false): LiveCheck {
+    fun liveCheck(state: WatchState, now: LocalDateTime, force: Boolean = false, generous: Boolean = true): LiveCheck {
         val departure = state.departureTime
         return when {
             state.cancelled || now >= state.arrivalTime.plusMinutes(state.arrivalDelay.toLong()) -> LiveCheck.NONE
@@ -89,7 +94,7 @@ object FavoriteWatch {
             // Before boards can show the train, the full feed once an hour: a cancellation decided hours
             // ahead is seen within the hour, not only when the boards take over.
             now >= departure.minus(LiveFeed.HORIZON) &&
-                (force || state.fullAt.isEmpty() || now >= LocalDateTime.parse(state.fullAt).plus(FULL_FEED_EVERY)) ->
+                (force || state.fullAt.isEmpty() || (generous && now >= LocalDateTime.parse(state.fullAt).plus(FULL_FEED_EVERY))) ->
                 LiveCheck.FULL_FEED
             else -> LiveCheck.NONE
         }
@@ -114,13 +119,16 @@ object FavoriteWatch {
      * Messages are read once a day within two days of the run, hourly on its day, and every half hour from
      * the time boards show the train until it arrives: a message posted in the morning is seen within the hour.
      */
-    fun needsAlerts(state: WatchState, now: LocalDateTime, force: Boolean = false): Boolean {
+    fun needsAlerts(state: WatchState, now: LocalDateTime, force: Boolean = false, generous: Boolean = true): Boolean {
         val close = now >= state.departureTime.minus(Board.HORIZON) && now < state.arrivalTime.plusMinutes(state.arrivalDelay.toLong())
-        if (close) return force || state.alertsAt.isEmpty() || now >= LocalDateTime.parse(state.alertsAt).plus(ALERTS_EVERY)
+        // Sparing mode on mobile data: every 6 hours at most, close to the departure too.
+        val every = if (generous) ALERTS_EVERY else DataPolicy.SPARING_EVERY
+        val everyOnTheDay = if (generous) ALERTS_EVERY_ON_THE_DAY else DataPolicy.SPARING_EVERY
+        if (close) return force || state.alertsAt.isEmpty() || now >= LocalDateTime.parse(state.alertsAt).plus(every)
         if (now < state.departureTime.minus(ALERTS_BEFORE)) return false
         if (force) return true
         if (now.toLocalDate() == state.departureTime.toLocalDate()) {
-            return state.alertsAt.isEmpty() || now >= LocalDateTime.parse(state.alertsAt).plus(ALERTS_EVERY_ON_THE_DAY)
+            return state.alertsAt.isEmpty() || now >= LocalDateTime.parse(state.alertsAt).plus(everyOnTheDay)
         }
         return state.alertsDay != now.toLocalDate().toString()
     }
@@ -154,6 +162,7 @@ object FavoriteWatch {
         }
         if (new.cancelled) return if (old.cancelled) emptyList() else listOf(FavoriteChange.Cancelled)
         return buildList {
+            if (old.cancelled) add(FavoriteChange.Restored)
             if (old.departure != new.departure) add(FavoriteChange.ScheduleChanged(new.departureTime))
             delayChange(new, old.notifiedDepartureDelay, old.notifiedArrivalDelay, now)?.let { add(it) }
             when {
@@ -193,6 +202,7 @@ object FavoriteWatch {
 
     /** Today's run cancelled in advance: it has left the timetables, only the live feed still knows it. */
     fun missingRun(favorite: FavoriteTrain, ride: RideLeg?, feed: LiveFeed, now: LocalDateTime): RideLeg? {
+        if (!favorite.takenOn(now.dayOfWeek)) return null
         val query = CancelledQuery(
             Station(favorite.fromName, favorite.fromUic, -1),
             Station(favorite.toName, favorite.toUic, -1),
@@ -250,7 +260,7 @@ object FavoriteWatch {
         val planned = Duration.between(trip.serviceDate.atStartOfDay(), if (boarding) trip.departure else trip.arrival).seconds.toInt()
         val passage = BoardPatch.find(
             board, trip.number, trip.serviceDate,
-            departure = planned.takeIf { boarding }, arrival = planned.takeUnless { boarding }, now = now,
+            departure = planned.takeIf { boarding }, arrival = planned.takeUnless { boarding }, now = now, exact = trip.removed,
         ) ?: return null
         return if (boarding) {
             state.copy(

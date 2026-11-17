@@ -86,7 +86,8 @@ object WidgetData {
         val last = rides.last()
         val departureDelay = legStates.firstOrNull()?.departureDelay ?: 0
         val arrivalDelay = legStates.lastOrNull()?.arrivalDelay ?: 0
-        val cancelled = legStates.any { it?.cancelled == true }
+        // What the check last saw, otherwise the timetables: a train cancelled in advance may run after all.
+        val cancelled = rides.indices.any { i -> legStates.getOrNull(i)?.cancelled ?: rides[i].trip.cancelled }
         val atRisk = legStates.zipWithNext().any { (before, after) ->
             before != null && after != null &&
                 FavoriteWatch.connectionAtRisk(before, after.copy(connectionWarned = false), TIGHT_CONNECTION_MINUTES) != null

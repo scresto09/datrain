@@ -14,6 +14,7 @@ object BoardPatch {
      * midnight of [serviceDate]: same number and planned time, or the only passage of that number.
      * After midnight, a train of the day before is on the new day's board, its times counted from that new
      * midnight. Null when the board cannot tell: out of date, another day, or without the train.
+     * [exact]: the planned time must match, for a run cancelled in advance whose number may now be another run's.
      * The one way to read a board, for the map and for the background check.
      */
     fun find(
@@ -23,6 +24,7 @@ object BoardPatch {
         departure: Int?,
         arrival: Int?,
         now: OffsetDateTime,
+        exact: Boolean = false,
     ): Passage? {
         if (now >= board.staleAfter) return null
         val days = ChronoUnit.DAYS.between(serviceDate, board.day)
@@ -33,7 +35,7 @@ object BoardPatch {
         return candidates.firstOrNull { passage ->
             (departure != null && passage.departureSeconds == departure - shift) ||
                 (arrival != null && passage.arrivalSeconds == arrival - shift)
-        } ?: candidates.singleOrNull()
+        } ?: candidates.singleOrNull()?.takeUnless { exact }
     }
 
     fun apply(train: LiveTrain, index: Int, passage: Passage): LiveTrain {

@@ -1,6 +1,8 @@
 package com.scresto.datrain.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,6 +31,7 @@ import com.scresto.datrain.data.Itinerary
 import com.scresto.datrain.data.PARIS
 import java.time.LocalDate
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun FavoriteCard(
     run: FavoriteRun,
@@ -36,10 +39,16 @@ internal fun FavoriteCard(
     showBell: Boolean,
     onBell: () -> Unit,
     onRemove: () -> Unit,
+    onDays: () -> Unit,
 ) {
     val rides = run.rides
     val favorite = run.favorite
-    Card(Modifier.fillMaxWidth().clickable(enabled = rides != null) { onOpen(run) }) {
+    Card(
+        Modifier.fillMaxWidth().combinedClickable(
+            onClick = { if (rides != null) onOpen(run) },
+            onLongClick = onDays,
+        ),
+    ) {
         Row(Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 val day = rides?.let { " · ${favoriteDay(it.first().trip.departure.toLocalDate())}" }.orEmpty()
@@ -51,6 +60,15 @@ internal fun FavoriteCard(
                 } else {
                     Text(stationsLine(Itinerary(rides)))
                     statusLine(run)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+                // Every day is the usual case: said only when restricted, and changed from the map otherwise.
+                if (favorite.days.isNotEmpty()) {
+                    Text(
+                        "${daysLabel(favorite.days)} ✎",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable(onClickLabel = "Choisir les jours suivis", onClick = onDays),
+                    )
                 }
             }
             if (showBell) {

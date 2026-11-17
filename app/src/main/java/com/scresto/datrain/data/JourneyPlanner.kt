@@ -13,6 +13,14 @@ class JourneyPlanner(val table: RailTimetable) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<LocalDate, JourneySearch>) = size > 2
     }
     private val searchNames: Array<String> by lazy { Array(table.stationCount) { foldName(table.stationNames[it]) } }
+    /** Trips still in the timetables, by each of their numbers. */
+    private val runningByNumber: Map<String, IntArray> by lazy {
+        val found = HashMap<String, ArrayList<Int>>()
+        for (t in 0 until table.firstRemoved) {
+            for (n in TimetableMerger.numbers(table.strings[table.tripNumber[t]])) found.getOrPut(n) { ArrayList(2) } += t
+        }
+        found.mapValues { it.value.toIntArray() }
+    }
 
     fun searchStations(query: String, limit: Int = 8): List<Station> {
         val words = foldName(query).split(' ').filter { it.isNotEmpty() }
@@ -49,12 +57,15 @@ class JourneyPlanner(val table: RailTimetable) {
     fun search(from: Int, to: Int, date: LocalDate, startSeconds: Int): List<Itinerary> =
         search(intArrayOf(from), intArrayOf(to), date, startSeconds)
 
-    /** From any of [from] to any of [to]. */
+    /** From any of [from] to any of [to], with the direct trains cancelled in advance over the same hours. */
     fun search(from: IntArray, to: IntArray, date: LocalDate, startSeconds: Int): List<Itinerary> {
         val start = System.nanoTime()
         val found = searchFor(date).search(from, to, startSeconds).map { itinerary(it, date) }
         Log.i("Datrain", "Search in ${(System.nanoTime() - start) / 1_000_000} ms: ${found.size} journeys")
-        return found
+        val latest = found.maxOfOrNull { secondsOf(it.departure, date) }
+        val removed = removedJourneys(from, to, date) { departure, _ -> departure >= startSeconds && (latest == null || departure <= latest) }
+        if (removed.isEmpty()) return found
+        return (found + removed).sortedWith(compareBy({ it.departure }, { it.arrival }))
     }
 
     /** Journeys arriving by [latestSeconds] on [date], closest to that time first. */
@@ -77,10 +88,50 @@ class JourneyPlanner(val table: RailTimetable) {
                 from, to, JourneySearch.DAY / 2, JourneySearch.DAY, JourneySearch.DAY + latestSeconds, ARRIVE_BY_SCANS,
             ).filter { it.arrival >= JourneySearch.DAY }.map { itinerary(it, previous) }
         }
-        return found.distinctBy { it.id }
+        val kept = found.distinctBy { it.id }
             .sortedWith(compareByDescending<Itinerary> { it.arrival }.thenByDescending { it.departure })
             .take(ARRIVE_BY_LIMIT)
+        val earliest = kept.minOfOrNull { secondsOf(it.arrival, date) }
+        val removed = removedJourneys(from, to, date) { _, arrival -> arrival <= latestSeconds && (earliest == null || arrival >= earliest) }
+        if (removed.isEmpty()) return kept
+        return (kept + removed).sortedWith(compareByDescending<Itinerary> { it.arrival }.thenByDescending { it.departure })
     }
+
+    private fun secondsOf(time: LocalDateTime, date: LocalDate): Int =
+        java.time.Duration.between(date.atStartOfDay(), time).seconds.toInt()
+
+    /**
+     * Direct trains of [date] cancelled in advance from one of [from] to one of [to], whose planned times
+     * [accept] takes, unless a train of the same number still runs between those stations that day.
+     */
+    private fun removedJourneys(from: IntArray, to: IntArray, date: LocalDate, accept: (Int, Int) -> Boolean): List<Itinerary> {
+        if (table.firstRemoved == table.tripCount) return emptyList()
+        val dayIndex = ChronoUnit.DAYS.between(table.firstDate, date).toInt()
+        val origins = from.toHashSet()
+        val targets = to.toHashSet()
+        return (table.firstRemoved until table.tripCount).mapNotNull { trip ->
+            if (!table.runsOn(trip, dayIndex)) return@mapNotNull null
+            val stations = table.patternStations[table.tripPattern[trip]]
+            val flags = table.patternFlags[table.tripPattern[trip]]
+            val boarding = stations.indices.firstOrNull { stations[it] in origins && flags[it].toInt() and 1 != 0 } ?: return@mapNotNull null
+            val alighting = stations.indices.lastOrNull { it > boarding && stations[it] in targets && flags[it].toInt() and 2 != 0 }
+                ?: return@mapNotNull null
+            val first = table.tripOffset[trip]
+            val leg = JourneyLeg(trip, stations[boarding], stations[alighting], table.times[first + boarding * 2 + 1], table.times[first + alighting * 2])
+            if (!accept(leg.departure, leg.arrival) || stillRuns(trip, dayIndex, leg.fromStation, leg.toStation)) null
+            else Itinerary(listOf(ride(leg, date)))
+        }
+    }
+
+    /** A train of the same number as [removed] still runs from [from] to [to] that day. */
+    private fun stillRuns(removed: Int, dayIndex: Int, from: Int, to: Int): Boolean =
+        TimetableMerger.numbers(table.strings[table.tripNumber[removed]]).any { number ->
+            runningByNumber[number]?.any { t ->
+                val stations = table.patternStations[table.tripPattern[t]]
+                val boarding = stations.indexOf(from)
+                table.runsOn(t, dayIndex) && boarding >= 0 && stations.lastIndexOf(to) > boarding
+            } == true
+        }
 
     /** Trains running that day whose number starts with [query], the exact number first. */
     fun searchTrainNumber(query: String, date: LocalDate, limit: Int = NUMBER_RESULTS): List<RideLeg> {
@@ -102,12 +153,50 @@ class JourneyPlanner(val table: RailTimetable) {
             .take(limit)
     }
 
-    /** The favorite's next run not yet finished at [now]; null if the known timetables no longer have one. */
     /**
-     * The journey's next run: each train boards after the previous one arrives, within [MAX_CHANGE_HOURS].
-     * A journey already under way stays until its last train arrives.
+     * The favorite's next run not yet finished at [now], on a day the traveller takes it; null if the known
+     * timetables have none within [DAYS_LOOKED_AHEAD] days. Each train of a journey boards after the previous
+     * one arrives, within [MAX_CHANGE_HOURS]; a journey already under way stays until its last train arrives.
      */
     fun nextJourney(favorite: FavoriteTrain, now: LocalDateTime): List<RideLeg>? {
+        var from = now
+        repeat(DAYS_LOOKED_AHEAD) {
+            val rides = nextJourneyAnyDay(favorite, from) ?: return null
+            val leaves = rides.first().trip.departure
+            if (favorite.takenOn(leaves.dayOfWeek)) return rides
+            // Past that day's runs, overnight ones included.
+            from = maxOf(leaves.toLocalDate().plusDays(1).atStartOfDay(), rides.last().trip.arrival)
+        }
+        return null
+    }
+
+    /**
+     * Days of the week the favorite runs, as far as the timetables know: for a journey, the days all its
+     * trains run (a change after midnight is rare enough to be left aside).
+     */
+    fun runningDays(favorite: FavoriteTrain): Set<java.time.DayOfWeek> =
+        favorite.legs.map(::legDays).reduce { all, days -> all intersect days }
+
+    private fun legDays(leg: FavoriteTrain): Set<java.time.DayOfWeek> {
+        val from = table.stationNames.indexOf(leg.fromName)
+        val to = table.stationNames.indexOf(leg.toName)
+        if (from < 0 || to < 0) return emptySet()
+        val numbers = TimetableMerger.numbers(leg.number)
+        val days = HashSet<java.time.DayOfWeek>()
+        for (trip in 0 until table.firstRemoved) {
+            if (TimetableMerger.numbers(table.strings[table.tripNumber[trip]]).none { it in numbers }) continue
+            val stations = table.patternStations[table.tripPattern[trip]]
+            val boarding = stations.indexOf(from)
+            if (boarding < 0 || stations.lastIndexOf(to) <= boarding) continue
+            for (day in 0 until table.dayCount) {
+                if (table.runsOn(trip, day)) days += table.firstDate.plusDays(day.toLong()).dayOfWeek
+            }
+            if (days.size == 7) break
+        }
+        return days
+    }
+
+    private fun nextJourneyAnyDay(favorite: FavoriteTrain, now: LocalDateTime): List<RideLeg>? {
         if (!favorite.isJourney) return nextRun(favorite, now)?.let(::listOf)
         val legs = favorite.legs
         var from = now.minusHours(JOURNEY_LOOKBACK_HOURS)
@@ -143,8 +232,10 @@ class JourneyPlanner(val table: RailTimetable) {
         while (date <= table.lastDate) {
             val dayIndex = ChronoUnit.DAYS.between(table.firstDate, date).toInt()
             val midnight = date.atStartOfDay()
-            val best = candidates
-                .filter { (trip, _, _) -> table.runsOn(trip, dayIndex) }
+            val running = candidates.filter { (trip, _, _) -> table.runsOn(trip, dayIndex) }
+            // A train cancelled in advance gives way to the same number still running that day, even at other times.
+            val best = running
+                .filter { (trip, _, _) -> !table.isRemoved(trip) || running.all { table.isRemoved(it.first) } }
                 .filter { (trip, _, alighting) ->
                     midnight.plusSeconds(table.times[table.tripOffset[trip] + alighting * 2].toLong()) > now
                 }
@@ -212,6 +303,8 @@ class JourneyPlanner(val table: RailTimetable) {
                 serviceDate = serviceDate,
                 departure = midnight.plusSeconds(departure.toLong()),
                 arrival = midnight.plusSeconds(arrival.toLong()),
+                cancelled = table.isRemoved(trip),
+                removed = table.isRemoved(trip),
                 fromKey = stationKey(leg.fromStation),
                 toKey = stationKey(leg.toStation),
                 plannedStops = stops,
@@ -237,6 +330,8 @@ class JourneyPlanner(val table: RailTimetable) {
         const val ARRIVE_BY_ENOUGH = 3
         const val ARRIVE_BY_LIMIT = 12
         const val NUMBER_RESULTS = 20
+        /** A favorite taken on a few days only still has a run within two weeks. */
+        const val DAYS_LOOKED_AHEAD = 15
 
         fun foldName(text: String): String = TimetableMerger.foldAccents(text).replace('-', ' ').replace('\'', ' ')
     }
@@ -290,6 +385,8 @@ object RealtimeOverlay {
             ?: return trip
         val from = update.stops.firstOrNull { it.uic == trip.fromKey }
         val to = update.stops.lastOrNull { it.uic == trip.toKey }
+        // Cancelled in advance: only an update serving its stations, in order, is its own.
+        if (trip.removed && (from == null || to == null || update.stops.indexOf(from) >= update.stops.lastIndexOf(to))) return trip
         return trip.copy(
             departureDelayMinutes = delayMinutes(from?.departureEpoch, trip.departure, zone),
             arrivalDelayMinutes = delayMinutes(to?.arrivalEpoch, trip.arrival, zone),
@@ -409,7 +506,14 @@ object RealtimeOverlay {
         if (!feed.isFresh()) return found
         val wanted = query.trim().uppercase()
         val updated = found.map { ride ->
-            if (feed.find(ride.trip)?.cancelled == true) ride.copy(trip = ride.trip.copy(cancelled = true)) else ride
+            val live = feed.find(ride.trip)
+            when {
+                live == null -> ride
+                // Cancelled in advance, running after all.
+                ride.trip.removed -> ride.copy(trip = ride.trip.copy(cancelled = live.cancelled))
+                live.cancelled -> ride.copy(trip = ride.trip.copy(cancelled = true))
+                else -> ride
+            }
         }
         val shown = updated.flatMap { TimetableMerger.numbers(it.trip.number) }.toSet()
         val extra = feed.trains

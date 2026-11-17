@@ -45,7 +45,8 @@ class JourneySearch(private val table: RailTimetable, date: LocalDate) {
         val dayIndex = ChronoUnit.DAYS.between(table.firstDate, date).toInt()
         val runs = ArrayList<Long>()
         var total = 0
-        for (t in 0 until table.tripCount) {
+        // A train cancelled in advance cannot be part of a journey.
+        for (t in 0 until table.firstRemoved) {
             val stopCount = table.patternStations[table.tripPattern[t]].size
             val endsAfterMidnight = table.times[table.tripOffset[t] + stopCount * 2 - 2] > DAY
             for (offset in -1..1) {

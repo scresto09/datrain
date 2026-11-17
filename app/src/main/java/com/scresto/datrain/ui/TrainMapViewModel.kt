@@ -185,7 +185,7 @@ class TrainMapViewModel(application: Application) : AndroidViewModel(application
             if (expected - elapsed > Board.HORIZON.seconds) continue
             val board = api.board(stop.uic)
             val passage = BoardPatch.find(
-                board, current.number, current.serviceDate, stop.departureSeconds, stop.arrivalSeconds, OffsetDateTime.now(PARIS),
+                board, current.number, current.serviceDate, stop.departureSeconds, stop.arrivalSeconds, OffsetDateTime.now(PARIS), exact = trip.removed,
             ) ?: return false
             if (passage.cancelled) return false
             updated = BoardPatch.apply(updated, current.stops.indexOf(stop), passage)
@@ -205,7 +205,8 @@ class TrainMapViewModel(application: Application) : AndroidViewModel(application
     /** Outside live tracking, the train is still placed from its planned times. */
     private fun plannedTrain(trip: Trip): LiveTrain? =
         trip.plannedStops.takeIf { it.isNotEmpty() }?.let {
-            LiveTrain(trip.number, trip.number, trip.serviceDate, cancelled = false, hasRealtime = false, stops = it)
+            // Cancelled in advance, unless real time showed it running after all.
+            LiveTrain(trip.number, trip.number, trip.serviceDate, cancelled = trip.removed && trip.cancelled, hasRealtime = false, stops = it)
         }
 
     private fun recompute(trip: Trip) {

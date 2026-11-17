@@ -24,7 +24,7 @@ internal class ResultsRealtime(private val nomade: NomadeApi, private val realti
     /** Null when no result is near enough in time for real time to say anything. */
     suspend fun apply(itineraries: List<Itinerary>, query: CancelledQuery, now: LocalDateTime): Applied? {
         val soon = itineraries.flatMap { it.rides }.filter { ride ->
-            ride.trip.departure < now.plus(REALTIME_HORIZON) && ride.trip.arrival > now.minus(REALTIME_HORIZON)
+            !ride.trip.removed && ride.trip.departure < now.plus(REALTIME_HORIZON) && ride.trip.arrival > now.minus(REALTIME_HORIZON)
         }
         // Today, the live feed may also hold cancelled trains that the search could not find.
         if (soon.isEmpty() && query.date != now.toLocalDate()) return null

@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -20,6 +22,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -45,6 +48,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.scresto.datrain.BuildConfig
+import com.scresto.datrain.data.DataMode
 
 private const val HOMEPAGE = "https://scresto.pages-perso.free.fr/datrain"
 private const val HELP_PAGE = "https://scresto.pages-perso.free.fr/datrain/help.html"
@@ -77,6 +81,8 @@ private fun AboutLink(label: String, onClick: () -> Unit) {
 internal fun AboutDialog(
     notifications: Boolean,
     onNotifications: (Boolean) -> Unit,
+    dataMode: DataMode,
+    onDataMode: (DataMode) -> Unit,
     onSources: () -> Unit,
     onTestNotification: () -> Unit,
     hasFavorites: Boolean,
@@ -112,6 +118,8 @@ internal fun AboutDialog(
                         pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx())),
                     )
                 }
+                // Below the stub, scrolled on a small screen: the ticket's notches stay where they are.
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
                 Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f).padding(end = 8.dp)) {
@@ -119,6 +127,26 @@ internal fun AboutDialog(
                             Text("Retards, suppressions et messages de vos trains favoris", style = MaterialTheme.typography.bodySmall)
                         }
                         Switch(checked = notifications, onCheckedChange = onNotifications)
+                    }
+                    // Folded: the ticket stays short; the choice and its warnings show on demand.
+                    var dataOpen by remember { mutableStateOf(false) }
+                    Row(
+                        Modifier.fillMaxWidth().clickable(onClickLabel = if (dataOpen) "Replier" else "Déplier") { dataOpen = !dataOpen },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Données mobiles : ${dataModeName(dataMode)}",
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(if (dataOpen) "▲" else "▼", color = MaterialTheme.colorScheme.primary)
+                    }
+                    if (dataOpen) {
+                        MobileDataWarning()
+                        DataModeChoice(dataMode) { mode ->
+                            onDataMode(mode)
+                            dataOpen = false
+                        }
                     }
                     if (BuildConfig.DEBUG) {
                         TextButton(onClick = onTestNotification, enabled = hasFavorites, contentPadding = PaddingValues(0.dp)) {
@@ -138,6 +166,7 @@ internal fun AboutDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
                 )
+                }
             }
         }
     }

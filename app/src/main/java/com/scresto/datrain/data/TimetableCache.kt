@@ -11,7 +11,7 @@ import java.time.LocalDate
  * raw arrays, much faster to read back than the compressed files.
  */
 object TimetableCache {
-    private const val FORMAT = 1
+    private const val FORMAT = 2
 
     fun write(table: RailTimetable, target: File) {
         val temporary = File(target.parentFile, target.name + ".tmp")
@@ -35,6 +35,7 @@ object TimetableCache {
         writer.bytes(table.tripMode)
         writer.ints(table.tripOffset)
         writer.ints(table.times)
+        writer.int(table.firstRemoved)
         temporary.outputStream().use { writer.writeTo(it) }
         check(temporary.renameTo(target)) { "Could not save the timetables" }
     }
@@ -66,6 +67,7 @@ object TimetableCache {
                     tripMode = buffer.readBytes(),
                     tripOffset = buffer.readInts(),
                     times = buffer.readInts(),
+                    firstRemoved = buffer.getInt(),
                 )
             }
         } catch (e: RuntimeException) {
