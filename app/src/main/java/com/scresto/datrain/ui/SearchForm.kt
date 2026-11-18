@@ -109,7 +109,7 @@ internal fun SearchForm(state: UiState, vm: SearchViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val planner = (state.timetable as? TimetableState.Ready)?.planner
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(Modifier.weight(1f).tourTarget(TourTargets.STATIONS), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 StationField("Gare de départ", state.fromText, state.from, planner, state.recent.stations, vm::setFromText, vm::selectFrom, vm::forgetStation)
                 StationField("Gare d'arrivée", state.toText, state.to, planner, state.recent.stations, vm::setToText, vm::selectTo, vm::forgetStation)
             }
@@ -117,13 +117,24 @@ internal fun SearchForm(state: UiState, vm: SearchViewModel) {
                 Icon(painterResource(R.drawable.ic_swap), contentDescription = "Inverser les gares")
             }
         }
-        if (state.recent.journeys.isNotEmpty()) {
-            RecentJourneys(state.recent.journeys, vm::selectRecentJourney, vm::forgetJourney)
+        // During the tour, the example stands for the searches to come.
+        val journeys = state.recent.journeys.ifEmpty {
+            if (state.tour != null && state.from != null && state.to != null) {
+                listOf(RecentJourney(RecentStation(state.from.name, state.from.uic), RecentStation(state.to.name, state.to.uic)))
+            } else {
+                emptyList()
+            }
+        }
+        if (journeys.isNotEmpty()) {
+            Box(Modifier.tourTarget(TourTargets.RECENT_JOURNEYS)) {
+                RecentJourneys(journeys, vm::selectRecentJourney, vm::forgetJourney)
+            }
         }
         if (state.sameStation) {
             Text("Les deux gares sont identiques.", color = MaterialTheme.colorScheme.error)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f).tourTarget(TourTargets.DATETIME), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = { pickDate = true },
                 contentPadding = PaddingValues(horizontal = 8.dp),
@@ -138,12 +149,14 @@ internal fun SearchForm(state: UiState, vm: SearchViewModel) {
             ) {
                 Text("${if (state.arriveBy) "Arrivée" else "Départ"} ${state.time.format(TIME_FORMAT)}", maxLines = 1)
             }
+            }
             FilledIconButton(
                 onClick = {
                     focusManager.clearFocus() // Closes the keyboard, which would hide the results.
                     vm.search()
                 },
                 enabled = state.canSearch,
+                modifier = Modifier.tourTarget(TourTargets.SEARCH),
             ) {
                 Icon(Icons.Filled.Search, contentDescription = "Rechercher")
             }
@@ -320,7 +333,7 @@ internal fun RecentTrainsMenu(
     onForget: (RecentTrain) -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
-    Box {
+    Box(Modifier.tourTarget(TourTargets.RECENT_TRAINS)) {
         IconButton(onClick = { open = true }) {
             Icon(
                 painterResource(R.drawable.ic_train),

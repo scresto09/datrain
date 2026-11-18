@@ -1,5 +1,6 @@
 package com.scresto.datrain.ui
 
+import com.scresto.datrain.data.Alternatives
 import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.Itinerary
 import com.scresto.datrain.data.RecentHistory
@@ -22,6 +23,10 @@ data class FavoriteRun(
     val next: List<RideLeg>? = rides,
     /** An earlier run whose planned arrival has passed: if it is late, it is still the one to show. */
     val late: List<RideLeg>? = null,
+    /** In place of a cancelled run: the train before, while it can be caught, and the one after. */
+    val alternatives: Alternatives? = null,
+    /** In place of a cancelled run, the temporary follow taken: "le 17:09". */
+    val replacedBy: String? = null,
 ) {
     val ride: RideLeg? get() = rides?.firstOrNull()
     val itinerary: Itinerary? get() = rides?.let(::Itinerary)
@@ -53,6 +58,12 @@ data class UiState(
     val trackedTrip: Trip? = null,
     /** All trains of the journey the tracked one belongs to, when it has changes. */
     val trackedJourney: List<Trip> = emptyList(),
+    /** Opened in place of a cancelled run: its star offers a temporary follow first. */
+    val trackedAsAlternative: Boolean = false,
+    /** Start of the hours searched on the day asked: earlier trains are looked for before it. */
+    val searchedFrom: LocalTime? = null,
+    /** The step of the guided tour on screen, if any. */
+    val tour: Int? = null,
     val showSources: Boolean = false,
     /** Alerts per journey, once its details are open. */
     val alerts: Map<String, List<ServiceAlert>> = emptyMap(),
@@ -63,6 +74,10 @@ data class UiState(
     val trainSearch: TrainSearchState = TrainSearchState(date = date),
 ) {
     val sameStation: Boolean get() = from != null && from.name == to?.name
+
+    /** Earlier trains can be added above the results, down to the start of the day searched. */
+    val canLoadEarlier: Boolean
+        get() = hasSearched && !arriveBy && !isLoading && searchedFrom != null && searchedFrom > LocalTime.MIDNIGHT
     val canSearch: Boolean
         get() = timetable is TimetableState.Ready && from != null && to != null && !sameStation && !isLoading
 

@@ -78,7 +78,7 @@ object FavoriteCheck {
             if (feed != null && rides !== late) checked += lateId!!
             rides?.firstOrNull()?.let { departures += it.trip.departure }
             // A run on a day the traveller no longer takes it was not removed: it is simply forgotten.
-            val forgotten = states[FavoriteWatch.legKeys(favorite).first()]?.let { !favorite.takenOn(it.departureTime.dayOfWeek) } == true
+            val forgotten = states[FavoriteWatch.legKeys(favorite).first()]?.let { !favorite.takenOn(it.departureTime.toLocalDate()) } == true
             // A journey is watched train by train, then its changes.
             val legStates = favorite.legs.mapIndexed { i, leg ->
                 val key = FavoriteWatch.legKeys(favorite)[i]

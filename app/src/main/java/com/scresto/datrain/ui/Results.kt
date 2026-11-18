@@ -15,6 +15,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -49,11 +51,17 @@ internal fun ItineraryCard(
     onToggleFavorite: (FavoriteTrain) -> Unit,
     fromCity: Boolean = false,
     toCity: Boolean = false,
+    /** The first result, which the guided tour points at and opens. */
+    tourFirst: Boolean = false,
 ) {
     var expanded by rememberSaveable(itinerary.id) { mutableStateOf(false) }
+    val tourTarget = LocalTourTarget.current
+    LaunchedEffect(tourFirst, tourTarget) {
+        if (tourFirst && (tourTarget == TourTargets.STAR || tourTarget == TourTargets.MAP)) expanded = true
+    }
     val atRisk = itinerary.hasConnectionAtRisk(TIGHT_CONNECTION_MINUTES)
     Card(
-        Modifier.fillMaxWidth().clickable {
+        Modifier.fillMaxWidth().then(if (tourFirst) Modifier.tourTarget(TourTargets.RESULT) else Modifier).clickable {
             expanded = !expanded
             if (expanded) onExpand()
         },
@@ -106,7 +114,7 @@ internal fun ItineraryCard(
             }
             if (expanded) {
                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                ItineraryDetail(itinerary, onTrack, isFavorite, onToggleFavorite)
+                ItineraryDetail(itinerary, onTrack, isFavorite, onToggleFavorite, tourFirst)
                 AlertsSection(alerts, alertsFailed)
             }
         }
@@ -154,6 +162,7 @@ private fun ItineraryDetail(
     onTrack: (RideLeg, Itinerary) -> Unit,
     isFavorite: (FavoriteTrain) -> Boolean,
     onToggleFavorite: (FavoriteTrain) -> Unit,
+    tourFirst: Boolean,
 ) {
     val now = LocalDateTime.now(PARIS)
     val connections = itinerary.connections()
@@ -182,7 +191,11 @@ private fun ItineraryDetail(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("${trip.product} ${trip.number}", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                     if (itinerary.rides.size == 1) {
-                        FavoriteTrain.of(trip)?.let { favorite -> FavoriteStar(isFavorite(favorite)) { onToggleFavorite(favorite) } }
+                        FavoriteTrain.of(trip)?.let { favorite ->
+                            Box(if (tourFirst && rideIndex == 1) Modifier.tourTarget(TourTargets.STAR) else Modifier) {
+                                FavoriteStar(isFavorite(favorite)) { onToggleFavorite(favorite) }
+                            }
+                        }
                     }
                 }
                 Text(stopLine(leg.fromName, trip.departure, trip.departureDelayMinutes, trip.cancelled, now))
@@ -200,7 +213,11 @@ private fun ItineraryDetail(
                     Text("Supprimé", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
                 }
                 if (trip.isTrackableAt(now)) {
-                    TextButton(onClick = { onTrack(leg, itinerary) }, contentPadding = PaddingValues(0.dp)) {
+                    TextButton(
+                        onClick = { onTrack(leg, itinerary) },
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = if (tourFirst && rideIndex == 1) Modifier.tourTarget(TourTargets.MAP) else Modifier,
+                    ) {
                         Text("Voir sur la carte")
                     }
                 }

@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -50,6 +51,10 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.scresto.datrain.R
 import com.scresto.datrain.data.DataMode
+import com.scresto.datrain.data.RecentTrain
+import com.scresto.datrain.widget.DatrainWidget
+import com.scresto.datrain.widget.WidgetPin
+import com.scresto.datrain.data.TemporaryFollows
 import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.PARIS
 import com.scresto.datrain.data.StationGroups
@@ -65,11 +70,33 @@ import java.util.Locale
 
 private const val SHOWN_REFRESH_MILLIS = 2 * 60_000L
 
+/** The app, with the guided tour over every screen. */
+@Composable
+fun DatrainRoot(
+    openedFavorite: String? = null,
+    onFavoriteOpened: () -> Unit = {},
+    openedAlternatives: Pair<String, String>? = null,
+    onAlternativesOpened: () -> Unit = {},
+) {
+    val vm: SearchViewModel = viewModel()
+    val state by vm.state.collectAsState(Dispatchers.Main.immediate)
+    androidx.compose.runtime.CompositionLocalProvider(LocalTourTarget provides state.tour?.let { TOUR.getOrNull(it)?.target }) {
+        Box(Modifier.fillMaxSize()) {
+            DatrainApp(openedFavorite, onFavoriteOpened, openedAlternatives, onAlternativesOpened, vm)
+            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+                TourOverlay(state, vm)
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DatrainApp(
     openedFavorite: String? = null,
     onFavoriteOpened: () -> Unit = {},
+    openedAlternatives: Pair<String, String>? = null,
+    onAlternativesOpened: () -> Unit = {},
     vm: SearchViewModel = viewModel(),
 ) {
     // Immediate: a text field receiving its value late can duplicate or lose letters.
@@ -95,6 +122,17 @@ fun DatrainApp(
             onFavoriteOpened()
         }
     }
+    LaunchedEffect(openedAlternatives, state.timetable is TimetableState.Ready) {
+        if (openedAlternatives != null && state.timetable is TimetableState.Ready) {
+            val (key, leaves) = openedAlternatives
+            runCatching { LocalDateTime.parse(leaves) }.getOrNull()?.let { vm.searchAlternatives(key, it) }
+            onAlternativesOpened()
+        }
+    }
+    // The widget tip only where the launcher can place it in one tap, and while it is not placed yet.
+    val widgetPinnable = remember(state.recent.favorites.size) {
+        WidgetPin.isSupported(context) && !DatrainWidget.isPlaced(context)
+    }
     var showAbout by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -115,15 +153,37 @@ fun DatrainApp(
     }
 
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+        // Everyone sees the tour once, after choosing the data mode.
+        LaunchedEffect(state.recent.introSeen, state.recent.dataMode, state.tour) {
+            if (!state.recent.introSeen && state.recent.dataMode != null && state.tour == null) vm.startTour()
+        }
         daysFor?.let { (train, adding) ->
             val running = remember(train.key, state.timetable) {
                 (state.timetable as? TimetableState.Ready)?.planner?.runningDays(train).orEmpty()
             }
-            FavoriteDaysDialog(train, running, adding, onDismiss = { daysFor = null }) { days ->
+            // The run seen, followed alone if wished: until 30 minutes after it arrives.
+            val temporaryRun = remember(train.key, state.timetable, state.trackedTrip) {
+                val day = (state.trackedJourney.firstOrNull() ?: state.trackedTrip)?.serviceDate
+                val planner = (state.timetable as? TimetableState.Ready)?.planner
+                if (!adding || day == null || planner == null) {
+                    null
+                } else {
+                    val follow = train.copy(run = day.toString(), days = emptyList())
+                    val now = LocalDateTime.now(PARIS)
+                    planner.nextJourney(follow, now)?.takeIf { !TemporaryFollows.isOver(follow, planner, emptyMap(), now) }?.first()?.trip?.departure
+                }
+            }
+            FavoriteDaysDialog(
+                train, running, adding,
+                onDismiss = { daysFor = null },
+                temporaryRun = temporaryRun,
+                preferTemporary = state.trackedAsAlternative,
+            ) { days, temporary ->
                 daysFor = null
                 if (adding) {
                     if (state.recent.notifications) askNotifications()
-                    vm.addFavorite(train.copy(days = days))
+                    val day = (state.trackedJourney.firstOrNull() ?: state.trackedTrip)?.serviceDate
+                    vm.addFavorite(if (temporary && day != null) train.copy(run = day.toString(), days = emptyList()) else train.copy(days = days))
                 } else {
                     vm.setFavoriteDays(train, days)
                 }
@@ -152,7 +212,9 @@ fun DatrainApp(
                     vm.refreshFavorites()
                 },
                 isFavorite = if (byNumber) numberFavorite != null else favorite != null && state.recent.isFavorite(favorite),
-                onDays = savedFavorite?.let { saved -> { daysFor = saved to false } },
+                onDays = savedFavorite?.takeUnless { it.isTemporary }?.let { saved -> { daysFor = saved to false } },
+                onAlternatives = { vm.searchAlternatives(trip) },
+                stopsTip = if (state.tour == null && Tips.STOPS !in state.recent.tipsSeen) { { vm.seeTip(Tips.STOPS) } } else null,
                 daysRestricted = savedFavorite?.days?.isNotEmpty() == true,
                 onToggleFavorite = when {
                     numberFavorite != null -> { { vm.removeFavorite(numberFavorite) } }
@@ -190,6 +252,10 @@ fun DatrainApp(
                     vm.sendTestNotification()
                 },
                 hasFavorites = state.recent.favorites.isNotEmpty(),
+                onIntro = {
+                    showAbout = false
+                    vm.startTour()
+                },
                 onDismiss = { showAbout = false },
             )
         }
@@ -197,12 +263,12 @@ fun DatrainApp(
             snackbarHost = { SnackbarHost(snackbar) },
             topBar = {
                 TopAppBar(
-                    title = { DatrainLogo(onClick = { showAbout = true }) },
+                    title = { Box(Modifier.tourTarget(TourTargets.LOGO)) { DatrainLogo(onClick = { showAbout = true }) } },
                     actions = {
                         IconButton(onClick = vm::clearResults) {
                             Icon(painterResource(R.drawable.ic_star), contentDescription = "Voir les favoris", tint = FAVORITE_YELLOW)
                         }
-                        IconButton(onClick = { vm.showTrainSearch(true) }) {
+                        IconButton(onClick = { vm.showTrainSearch(true) }, modifier = Modifier.tourTarget(TourTargets.NUMBER)) {
                             Text(
                                 "#",
                                 style = MaterialTheme.typography.titleLarge,
@@ -212,7 +278,11 @@ fun DatrainApp(
                         }
                         val now = LocalDateTime.now(PARIS)
                         val trains = state.recent.trains.filterNot { it.isOver(now) }
-                        if (trains.isNotEmpty()) RecentTrainsMenu(trains, vm::reopenTrain, vm::forgetTrain)
+                        // During the tour, the example's train stands for the trains to come.
+                        val shown = trains.ifEmpty {
+                            if (state.tour != null) state.itineraries.firstOrNull()?.rides?.firstOrNull()?.let { listOf(RecentTrain.of(it)) }.orEmpty() else emptyList()
+                        }
+                        if (shown.isNotEmpty()) RecentTrainsMenu(shown, vm::reopenTrain, vm::forgetTrain)
                     },
                 )
             },
@@ -236,6 +306,32 @@ fun DatrainApp(
                     item {
                         Text("★ Favoris", style = MaterialTheme.typography.titleMedium, color = FAVORITE_YELLOW)
                     }
+                    // One tip at a time, the most useful first.
+                    val seen = state.recent.tipsSeen
+                    val favoritesTip = when {
+                        Tips.ALTERNATIVE !in seen && state.favoriteRuns.any { it.alternatives?.isEmpty == false } ->
+                            Tips.ALTERNATIVE to "Touchez un train proposé pour le suivre à la place."
+                        Tips.WIDGET !in seen && widgetPinnable ->
+                            Tips.WIDGET to "Ajoutez le widget pour voir votre prochain train sur l'écran d'accueil."
+                        Tips.DAYS !in seen -> Tips.DAYS to "Appui long sur un favori pour choisir vos jours."
+                        else -> null
+                    }
+                    favoritesTip?.takeIf { state.tour == null }?.let { (tip, text) ->
+                        item(key = "tip-$tip") {
+                            Tip(
+                                text,
+                                onDismiss = { vm.seeTip(tip) },
+                                action = if (tip == Tips.WIDGET) {
+                                    "Ajouter le widget" to {
+                                        scope.launch { WidgetPin.request(context) }
+                                        vm.seeTip(tip)
+                                    }
+                                } else {
+                                    null
+                                },
+                            )
+                        }
+                    }
                     items(state.favoriteRuns, key = { "fav-${it.favorite.key}" }) { run ->
                         FavoriteCard(
                             run = run,
@@ -243,6 +339,10 @@ fun DatrainApp(
                             showBell = state.recent.notifications,
                             onBell = { vm.setFavoriteNotify(run.favorite, !run.favorite.notify) },
                             onDays = { daysFor = run.favorite to false },
+                            onAlternative = vm::openAlternative,
+                            isFollowed = { itinerary ->
+                                FavoriteTrain.of(itinerary.rides.map { it.trip })?.let(state.recent::isFavorite) == true
+                            },
                             onRemove = {
                                 vm.removeFavorite(run.favorite)
                                 scope.launch {
@@ -263,6 +363,17 @@ fun DatrainApp(
                 if (state.realtimeUnavailable) {
                     item { Text("Temps réel indisponible : seuls les horaires prévus sont affichés.") }
                 }
+                // Before the time asked, trains that may still be caught: a tap adds the hour before.
+                if (state.canLoadEarlier) {
+                    item(key = "earlier") {
+                        OutlinedButton(onClick = vm::loadEarlier, modifier = Modifier.fillMaxWidth()) { Text("Trains plus tôt") }
+                    }
+                }
+                if (state.tour == null && state.itineraries.isNotEmpty() && Tips.STAR !in state.recent.tipsSeen) {
+                    item(key = "tip-star") {
+                        Tip("Touchez ☆ pour suivre ce train dans vos favoris.", onDismiss = { vm.seeTip(Tips.STAR) })
+                    }
+                }
                 state.itineraries.groupBy { it.departure.toLocalDate() }.forEach { (day, itineraries) ->
                     item(key = "day-$day") {
                         Text(
@@ -272,6 +383,7 @@ fun DatrainApp(
                     }
                     items(itineraries, key = { it.id }) { itinerary ->
                         ItineraryCard(
+                            tourFirst = state.tour != null && itinerary.id == state.itineraries.firstOrNull()?.id,
                             itinerary = itinerary,
                             alerts = state.alerts[itinerary.id],
                             alertsFailed = itinerary.id in state.alertsFailed,

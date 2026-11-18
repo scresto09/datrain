@@ -4,6 +4,8 @@ import android.content.Context
 import com.scresto.datrain.data.Board
 import com.scresto.datrain.data.FavoriteCheck.TIGHT_CONNECTION_MINUTES
 import com.scresto.datrain.data.FavoriteRuns
+import com.scresto.datrain.data.TemporaryFollows
+import com.scresto.datrain.data.Alternatives
 import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.FavoriteWatch
 import com.scresto.datrain.data.FavoriteWatchStore
@@ -41,6 +43,8 @@ sealed interface WidgetContent {
         val checkedAt: String? = null,
         /** SNCF messages about the run, as counted on the favorites list. */
         val messages: Int = 0,
+        /** For a cancelled run: "Autres trains : 17:09 · 18:40", the trains before and after it. */
+        val alternatives: String? = null,
     ) : WidgetContent
 }
 
@@ -55,39 +59,57 @@ object WidgetData {
     const val REFRESHING = "--:--"
 
     suspend fun load(context: Context): WidgetContent {
-        val favorites = RecentHistoryStore(context).load().favorites
-        if (favorites.isEmpty()) return WidgetContent.NoFavorite
+        val all = RecentHistoryStore(context).load().favorites
+        if (all.isEmpty()) return WidgetContent.NoFavorite
         val planner = TimetableRepository.get(context).plannerOrNull() ?: return WidgetContent.NoTimetable
         val states = FavoriteWatchStore(context).load()
         val now = LocalDateTime.now(PARIS)
+        val favorites = all.filterNot { TemporaryFollows.isOver(it, planner, states, now) }
         val (favorite, rides) = favorites
             .mapNotNull { favorite ->
                 val saved = states[FavoriteWatch.legKeys(favorite).last()]
                 FavoriteRuns.choose(FavoriteRuns.candidates(favorite, planner, now), null, saved, now)?.let { favorite to it }
             }
+            // A cancelled run whose replacement is followed: that one is shown instead.
+            .filterNot { (favorite, rides) ->
+                val cancelled = cancelled(rides, runStates(favorite, rides, states))
+                cancelled && TemporaryFollows.replacement(favorite, rides.first().trip.serviceDate, favorites) != null
+            }
             .minByOrNull { (_, rides) -> rides.first().trip.departure }
             ?: return WidgetContent.NoTimetable
-        // Only what was learned about this very run counts.
-        val legStates = FavoriteWatch.legKeys(favorite).mapIndexed { i, key ->
-            states[key]?.takeIf { it.departure == rides.getOrNull(i)?.trip?.departure?.toString() }
-        }
+        val legStates = runStates(favorite, rides, states)
         val store = FavoriteWatchStore(context)
-        if (store.isRefreshing()) return next(favorite, rides, legStates, now).copy(checkedAt = REFRESHING)
+        val alternatives = if (cancelled(rides, legStates)) {
+            Alternatives.find(planner, favorite, rides, now).takeUnless { it.isEmpty }?.let { "Autres trains : ${it.times()}" }
+        } else {
+            null
+        }
+        if (store.isRefreshing()) return next(favorite, rides, legStates, now).copy(checkedAt = REFRESHING, alternatives = alternatives)
         val checked = store.checkedAt().takeIf { it > 0 }?.let {
             java.time.Instant.ofEpochMilli(it).atZone(PARIS).toLocalDateTime()
         }
         return next(favorite, rides, legStates, now).copy(
             checkedAt = checked?.takeIf { it.toLocalDate() == now.toLocalDate() }?.format(CLOCK),
+            alternatives = alternatives,
         )
     }
+
+    /** Only what was learned about this very run counts. */
+    private fun runStates(favorite: FavoriteTrain, rides: List<RideLeg>, states: Map<String, WatchState>): List<WatchState?> =
+        FavoriteWatch.legKeys(favorite).mapIndexed { i, key ->
+            states[key]?.takeIf { it.departure == rides.getOrNull(i)?.trip?.departure?.toString() }
+        }
+
+    /** What the check last saw, otherwise the timetables: a train cancelled in advance may run after all. */
+    private fun cancelled(rides: List<RideLeg>, legStates: List<WatchState?>): Boolean =
+        rides.indices.any { i -> legStates.getOrNull(i)?.cancelled ?: rides[i].trip.cancelled }
 
     fun next(favorite: FavoriteTrain, rides: List<RideLeg>, legStates: List<WatchState?>, now: LocalDateTime): WidgetContent.Next {
         val first = rides.first()
         val last = rides.last()
         val departureDelay = legStates.firstOrNull()?.departureDelay ?: 0
         val arrivalDelay = legStates.lastOrNull()?.arrivalDelay ?: 0
-        // What the check last saw, otherwise the timetables: a train cancelled in advance may run after all.
-        val cancelled = rides.indices.any { i -> legStates.getOrNull(i)?.cancelled ?: rides[i].trip.cancelled }
+        val cancelled = cancelled(rides, legStates)
         val atRisk = legStates.zipWithNext().any { (before, after) ->
             before != null && after != null &&
                 FavoriteWatch.connectionAtRisk(before, after.copy(connectionWarned = false), TIGHT_CONNECTION_MINUTES) != null

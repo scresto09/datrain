@@ -3,6 +3,8 @@ package com.scresto.datrain.ui
 import android.content.Context
 import com.scresto.datrain.data.AlertsCache
 import com.scresto.datrain.data.FavoriteRuns
+import com.scresto.datrain.data.TemporaryFollows
+import com.scresto.datrain.data.Alternatives
 import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.FavoriteWatch
 import com.scresto.datrain.data.FavoriteWatchStore
@@ -32,6 +34,16 @@ internal class FavoritesLoader(
     /** No network. A run already on screen keeps its delays and messages, so that nothing jumps. */
     fun planned(favorites: List<FavoriteTrain>, planner: JourneyPlanner, shown: List<FavoriteRun>, now: LocalDateTime): List<FavoriteRun> {
         val saved = FavoriteWatchStore(context).load()
+        return withAlternatives(plannedRuns(favorites, planner, shown, now, saved), planner, now, null, emptyList())
+    }
+
+    private fun plannedRuns(
+        favorites: List<FavoriteTrain>,
+        planner: JourneyPlanner,
+        shown: List<FavoriteRun>,
+        now: LocalDateTime,
+        saved: Map<String, com.scresto.datrain.data.WatchState>,
+    ): List<FavoriteRun> {
         return favorites.map { favorite ->
             val candidates = FavoriteRuns.candidates(favorite, planner, now)
             val chosen = FavoriteRuns.choose(candidates, null, saved[FavoriteWatch.legKeys(favorite).last()], now)
@@ -42,8 +54,32 @@ internal class FavoritesLoader(
         }.sortedForDisplay()
     }
 
+    /**
+     * For each cancelled run: the temporary follow taken in its place, otherwise the trains before and after it,
+     * with real time when known.
+     */
+    fun withAlternatives(
+        runs: List<FavoriteRun>,
+        planner: JourneyPlanner,
+        now: LocalDateTime,
+        feed: LiveFeed?,
+        updates: List<RealtimeTrip>,
+    ): List<FavoriteRun> {
+        val favorites = runs.map { it.favorite }
+        return runs.map { run ->
+            val rides = run.rides
+            if (rides == null || !Itinerary(rides).cancelled) return@map run.copy(alternatives = null, replacedBy = null)
+            val replacement = TemporaryFollows.replacement(run.favorite, rides.first().trip.serviceDate, favorites)
+            if (replacement != null) {
+                val leaves = runs.firstOrNull { it.favorite.isSameAs(replacement) }?.ride?.trip?.departure
+                return@map run.copy(alternatives = null, replacedBy = leaves?.let { "le ${it.format(TIME_FORMAT)}" } ?: "un suivi temporaire")
+            }
+            run.copy(alternatives = Alternatives.find(planner, run.favorite, rides, now, feed, updates), replacedBy = null)
+        }
+    }
+
     /** Throws [NomadeError] when no real time can be read. */
-    suspend fun live(runs: List<FavoriteRun>, now: LocalDateTime): List<FavoriteRun> {
+    suspend fun live(runs: List<FavoriteRun>, planner: JourneyPlanner, now: LocalDateTime): List<FavoriteRun> {
         // An out-of-date feed counts as none: its trains would show as on time.
         val feed = nomade.liveFeed().takeIf { it.isFresh() }
         // As for the results: a train missing from that feed may be in SNCF's own, read only then.
@@ -60,7 +96,7 @@ internal class FavoritesLoader(
         } else {
             emptyList()
         }
-        return runs.map { liveRun(it, feed, updates, now) }.sortedForDisplay()
+        return withAlternatives(runs.map { liveRun(it, feed, updates, now) }, planner, now, feed, updates).sortedForDisplay()
     }
 
     /**

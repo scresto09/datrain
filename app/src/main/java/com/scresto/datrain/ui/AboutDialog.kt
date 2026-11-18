@@ -51,7 +51,7 @@ import com.scresto.datrain.BuildConfig
 import com.scresto.datrain.data.DataMode
 
 private const val HOMEPAGE = "https://scresto.pages-perso.free.fr/datrain"
-private const val HELP_PAGE = "https://scresto.pages-perso.free.fr/datrain/help.html"
+internal const val HELP_PAGE = "https://scresto.pages-perso.free.fr/datrain/help.html"
 private const val PRIVACY_PAGE = "https://scresto.pages-perso.free.fr/datrain/privacy.html"
 
 /** A rounded rectangle with a notch on each side, where the ticket's stub would tear off. */
@@ -85,6 +85,7 @@ internal fun AboutDialog(
     onDataMode: (DataMode) -> Unit,
     onSources: () -> Unit,
     onTestNotification: () -> Unit,
+    onIntro: () -> Unit,
     hasFavorites: Boolean,
     onDismiss: () -> Unit,
 ) {
@@ -156,6 +157,7 @@ internal fun AboutDialog(
                     HorizontalDivider()
                 }
                 val uriHandler = LocalUriHandler.current
+                AboutLink("Revoir la visite guidée", onIntro)
                 AboutLink("Aide en ligne") { uriHandler.openUri(HELP_PAGE) }
                 AboutLink("Créé par Sylvain Cresto") { uriHandler.openUri(HOMEPAGE) }
                 AboutLink("Confidentialité") { uriHandler.openUri(PRIVACY_PAGE) }

@@ -40,16 +40,26 @@ data class FavoriteTrain(
     val connections: List<FavoriteTrain> = emptyList(),
     /** Days of the week the traveller takes it, 1 for Monday to 7 for Sunday; empty for every day it runs. */
     val days: List<Int> = emptyList(),
+    /**
+     * A temporary follow: the service day of its one run, ISO date. It goes away 30 minutes after that run
+     * arrives. Null for a regular favorite.
+     */
+    val run: String? = null,
 ) {
+    val isTemporary: Boolean get() = run != null
+
     /** Whether a run leaving on [day] concerns the traveller. */
     fun takenOn(day: java.time.DayOfWeek): Boolean = days.isEmpty() || day.value in days
+
+    /** Whether a run of service day [date] concerns the traveller. */
+    fun takenOn(date: LocalDate): Boolean = (run == null || run == date.toString()) && takenOn(date.dayOfWeek)
 
     /** One train alone keeps the key it had before journeys existed. */
     val key: String get() = legs.joinToString(">") { "${it.number}|${it.fromName}|${it.toName}" }
 
     /** Every train of the favorite, this one first. */
-    /** Each with the journey's days: they are those of its first train's departure. */
-    val legs: List<FavoriteTrain> get() = listOf(copy(connections = emptyList())) + connections.map { it.copy(days = days) }
+    /** Each with the journey's days and run: they are those of its first train's departure. */
+    val legs: List<FavoriteTrain> get() = listOf(copy(connections = emptyList())) + connections.map { it.copy(days = days, run = run) }
 
     val isJourney: Boolean get() = connections.isNotEmpty()
 
@@ -138,6 +148,10 @@ data class RecentHistory(
     val typeTime: Boolean = false,
     /** Null until chosen: the app then asks, and works as [DataMode.REACTIVE] meanwhile. */
     val dataMode: DataMode? = null,
+    /** The presentation was seen once: it is not shown again unless asked for. */
+    val introSeen: Boolean = false,
+    /** Tips already shown, each once; seeing the presentation again shows them again. */
+    val tipsSeen: Set<String> = emptySet(),
 ) {
     fun adding(from: Station, to: Station): RecentHistory {
         val start = RecentStation(from.name, from.uic)
@@ -163,6 +177,12 @@ data class RecentHistory(
     )
 
     fun withDataMode(mode: DataMode) = copy(dataMode = mode)
+
+    fun withTipSeen(tip: String) = copy(tipsSeen = tipsSeen + tip)
+
+    /** Temporary follows whose run is over are dropped. */
+    fun withoutFinishedFollows(planner: JourneyPlanner, states: Map<String, WatchState>, now: LocalDateTime) =
+        copy(favorites = favorites.filterNot { TemporaryFollows.isOver(it, planner, states, now) })
 
     fun withFavoriteDays(train: FavoriteTrain, days: List<Int>) = copy(
         favorites = favorites.map { if (it.isSameAs(train)) it.copy(days = days.sorted()) else it },

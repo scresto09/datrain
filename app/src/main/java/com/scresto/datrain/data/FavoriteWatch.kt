@@ -202,7 +202,7 @@ object FavoriteWatch {
 
     /** Today's run cancelled in advance: it has left the timetables, only the live feed still knows it. */
     fun missingRun(favorite: FavoriteTrain, ride: RideLeg?, feed: LiveFeed, now: LocalDateTime): RideLeg? {
-        if (!favorite.takenOn(now.dayOfWeek)) return null
+        if (!favorite.takenOn(now.toLocalDate())) return null
         val query = CancelledQuery(
             Station(favorite.fromName, favorite.fromUic, -1),
             Station(favorite.toName, favorite.toUic, -1),

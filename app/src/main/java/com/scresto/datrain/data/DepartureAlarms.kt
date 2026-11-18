@@ -25,10 +25,13 @@ import java.time.LocalDateTime
  * These alarms go off even then, without any special permission, give or take a few minutes.
  */
 object DepartureAlarms {
-    /** From two hours ahead, when many decide whether to leave, to the departure itself, closer near the end. */
-    private val MINUTES_BEFORE = longArrayOf(120, 90, 60, 45, 30, 20, 15, 10, 5, 0)
+    /**
+     * From two and a half hours ahead, when many decide whether to leave, to the departure itself: every
+     * 15 minutes, then every 10 from 1 h 40, then every 5 from 40 minutes.
+     */
+    private val MINUTES_BEFORE = longArrayOf(150, 135, 120, 105, 100, 90, 80, 70, 60, 50, 40, 35, 30, 25, 20, 15, 10, 5, 0)
     /** On board, so that a delay at the arrival is told without waiting for the regular check. */
-    private const val ON_BOARD_EVERY_MINUTES = 15L
+    private const val ON_BOARD_EVERY_MINUTES = 10L
     private const val WORK_NAME = "favoris-depart"
 
     /**

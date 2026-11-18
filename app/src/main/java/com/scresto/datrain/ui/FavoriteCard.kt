@@ -40,13 +40,18 @@ internal fun FavoriteCard(
     onBell: () -> Unit,
     onRemove: () -> Unit,
     onDays: () -> Unit,
+    /** A train offered in place of a cancelled run: its map, to follow it. */
+    onAlternative: (Itinerary) -> Unit = {},
+    /** Whether that train is already a favorite. */
+    isFollowed: (Itinerary) -> Boolean = { false },
 ) {
     val rides = run.rides
     val favorite = run.favorite
     Card(
         Modifier.fillMaxWidth().combinedClickable(
             onClick = { if (rides != null) onOpen(run) },
-            onLongClick = onDays,
+            // A temporary follow has no days to choose.
+            onLongClick = { if (!favorite.isTemporary) onDays() },
         ),
     ) {
         Row(Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -60,6 +65,17 @@ internal fun FavoriteCard(
                 } else {
                     Text(stationsLine(Itinerary(rides)))
                     statusLine(run)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+                run.replacedBy?.let {
+                    Text("Remplacé par $it (suivi temporaire)", style = MaterialTheme.typography.bodySmall)
+                }
+                run.alternatives?.let { alternatives ->
+                    val now = java.time.LocalDateTime.now(PARIS)
+                    alternatives.before?.let { AlternativeLine("Plus tôt", it, now, isFollowed(it)) { onAlternative(it) } }
+                    alternatives.after?.let { AlternativeLine("Suivant", it, now, isFollowed(it)) { onAlternative(it) } }
+                }
+                if (favorite.isTemporary) {
+                    Text("Suivi temporaire", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 // Every day is the usual case: said only when restricted, and changed from the map otherwise.
                 if (favorite.days.isNotEmpty()) {
@@ -83,6 +99,29 @@ internal fun FavoriteCard(
             FavoriteStar(selected = true, onClick = onRemove)
         }
     }
+}
+
+/** "Plus tôt : 17:09 → 18:44 (dans 12 min)", with its delay and changes: a tap opens that train. */
+@Composable
+private fun AlternativeLine(label: String, itinerary: Itinerary, now: java.time.LocalDateTime, followed: Boolean, onClick: () -> Unit) {
+    val first = itinerary.rides.first().trip
+    val last = itinerary.rides.last().trip
+    val text = buildString {
+        append("$label : ${first.estimatedDeparture.format(TIME_FORMAT)} → ${last.estimatedArrival.format(TIME_FORMAT)}")
+        if (first.departureDelayMinutes > 0) append(" (+${first.departureDelayMinutes} min)")
+        val minutes = java.time.Duration.between(now, first.estimatedDeparture).toMinutes()
+        if (minutes in 0..59) append(" · dans $minutes min")
+        if (itinerary.changes == 1) append(" · 1 correspondance")
+        if (itinerary.changes > 1) append(" · ${itinerary.changes} correspondances")
+        if (followed) append(" · déjà suivi")
+    }
+    Text(
+        "$text ›",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.Medium,
+        modifier = Modifier.clickable(onClickLabel = "Voir ce train", onClick = onClick),
+    )
 }
 
 /** "Carbonne 07:14 · voie 2 → Saint-Agne 07:45", with a changed time struck through and followed by the estimate. */

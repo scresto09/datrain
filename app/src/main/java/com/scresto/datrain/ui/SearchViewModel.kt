@@ -7,6 +7,8 @@ import com.scresto.datrain.data.AlertsCache
 import com.scresto.datrain.data.ServiceAlert
 import com.scresto.datrain.data.CancelledQuery
 import com.scresto.datrain.data.DataMode
+import com.scresto.datrain.data.Alternatives
+import com.scresto.datrain.data.FavoriteWatchStore
 import com.scresto.datrain.data.WifiCatchUpWorker
 import com.scresto.datrain.data.FavoriteTrain
 import com.scresto.datrain.data.FavoriteWatchWorker
@@ -96,7 +98,49 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
         it.copy(fromText = it.toText, toText = it.fromText, from = it.to, to = it.from)
     }
     fun track(trip: Trip?, journey: List<Trip> = emptyList()) =
-        _state.update { it.copy(trackedTrip = trip, trackedJourney = if (trip == null) emptyList() else journey) }
+        _state.update { it.copy(trackedTrip = trip, trackedJourney = if (trip == null) emptyList() else journey, trackedAsAlternative = false) }
+
+    /** A train offered in place of a cancelled one: its map, whose star offers a temporary follow first. */
+    fun openAlternative(itinerary: Itinerary) {
+        openRun(itinerary.rides)
+        _state.update { it.copy(trackedAsAlternative = true) }
+    }
+
+    /** From the map of a cancelled train: the search between its stations, from the train before it still possible. */
+    fun searchAlternatives(trip: Trip) {
+        val favorite = FavoriteTrain.of(trip) ?: return
+        searchAround(favorite, trip.departure, "${trip.number}@${trip.departure}")
+    }
+
+    /** From the notification of a cancelled favorite: the same search. */
+    fun searchAlternatives(favoriteKey: String, leaves: LocalDateTime) {
+        val favorite = _state.value.recent.favorites.firstOrNull { it.key == favoriteKey } ?: return
+        searchAround(favorite, leaves, null)
+    }
+
+    private fun searchAround(favorite: FavoriteTrain, leaves: LocalDateTime, cancelledId: String?) {
+        val planner = (_state.value.timetable as? TimetableState.Ready)?.planner ?: return
+        val now = LocalDateTime.now(PARIS)
+        val before = Alternatives.find(planner, favorite, leaves, cancelledId, now).before
+        val start = before?.departure ?: maxOf(leaves, now).truncatedTo(ChronoUnit.MINUTES)
+        val last = favorite.legs.last()
+        _state.update {
+            it.copy(
+                fromText = favorite.fromName,
+                toText = last.toName,
+                from = Station(favorite.fromName, favorite.fromUic, -1),
+                to = Station(last.toName, last.toUic, -1),
+                date = start.toLocalDate(),
+                time = start.toLocalTime(),
+                arriveBy = false,
+                trackedTrip = null,
+                trackedJourney = emptyList(),
+                trackedAsAlternative = false,
+                showTrainSearch = false,
+            )
+        }
+        search()
+    }
     fun showSources(show: Boolean) = _state.update { it.copy(showSources = show) }
 
     fun selectRecentJourney(journey: RecentJourney) = _state.update {
@@ -128,6 +172,62 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
         updateRecent { it.copy(notifications = enabled) }
         syncWatch()
     }
+
+    /** The guided tour, at the first launch or asked for from the logo; its tips are shown again with it. */
+    fun startTour() {
+        updateRecent { it.copy(tipsSeen = emptySet()) }
+        _state.update { it.copy(tour = 0) }
+        prepareTour()
+    }
+
+    /** The example search, once the timetables are there: Toulouse to Carbonne, today from now. */
+    fun prepareTour() {
+        val planner = (_state.value.timetable as? TimetableState.Ready)?.planner ?: return
+        val from = planner.searchStations("Toulouse Matabiau", 1).firstOrNull() ?: return
+        val to = planner.searchStations("Carbonne", 1).firstOrNull() ?: return
+        clearResults()
+        val now = LocalDateTime.now(PARIS).truncatedTo(ChronoUnit.MINUTES)
+        _state.update {
+            it.copy(
+                fromText = from.name, from = from, toText = to.name, to = to,
+                date = now.toLocalDate(), time = now.toLocalTime(), arriveBy = false,
+                trackedTrip = null, trackedJourney = emptyList(), showTrainSearch = false,
+            )
+        }
+    }
+
+    /** The screens follow the tour: the search runs, then the first journey's train opens on the map. */
+    fun tourNext() {
+        val step = _state.value.tour ?: return
+        when (TOUR.getOrNull(step)?.target) {
+            TourTargets.SEARCH -> search()
+            TourTargets.MAP -> {
+                val first = _state.value.itineraries.firstOrNull()
+                val ride = first?.rides?.firstOrNull { it.trip.isTrackableAt(LocalDateTime.now(PARIS)) }
+                if (ride == null) return tourGoTo(TOUR.indexOfFirst { it.target == TourTargets.NUMBER })
+                track(ride.trip, first.rides.map { it.trip }.takeIf { it.size > 1 }.orEmpty())
+            }
+            TourTargets.STOPS -> track(null)
+            TourTargets.LOGO -> return endTour()
+        }
+        _state.update { it.copy(tour = step + 1) }
+    }
+
+    fun tourGoTo(step: Int) {
+        if (_state.value.trackedTrip != null) track(null)
+        _state.update { it.copy(tour = step) }
+    }
+
+    /** Done or skipped: the example goes, and the tour is not shown again unless asked for. */
+    fun endTour() {
+        updateRecent { it.copy(introSeen = true) }
+        clearResults()
+        _state.update {
+            it.copy(tour = null, fromText = "", from = null, toText = "", to = null, trackedTrip = null, trackedJourney = emptyList())
+        }
+    }
+
+    fun seeTip(tip: String) = updateRecent { it.withTipSeen(tip) }
 
     fun setDataMode(mode: DataMode) {
         updateRecent { it.withDataMode(mode) }
@@ -184,6 +284,12 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
     fun refreshFavorites() {
         favoritesJob?.cancel()
         val planner = (_state.value.timetable as? TimetableState.Ready)?.planner ?: return
+        // A temporary follow goes away after its run.
+        val pruned = _state.value.recent.withoutFinishedFollows(planner, FavoriteWatchStore(getApplication()).load(), LocalDateTime.now(PARIS))
+        if (pruned != _state.value.recent) {
+            updateRecent { pruned }
+            syncWatch()
+        }
         val favorites = _state.value.recent.favorites
         favoritesJob = viewModelScope.launch {
             val now = LocalDateTime.now(PARIS)
@@ -197,7 +303,7 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
             var alerts: List<ServiceAlert>? = null
             val live = launch {
                 try {
-                    val updated = favoritesLoader.live(_state.value.favoriteRuns, now)
+                    val updated = favoritesLoader.live(_state.value.favoriteRuns, planner, now)
                     _state.update { it.copy(favoriteRuns = alerts?.let { known -> favoritesLoader.withMessages(updated, known) } ?: updated) }
                     liveRead = true
                 } catch (e: NomadeError) {
@@ -339,8 +445,36 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
 
     fun search() {
         val s = _state.value
-        if (s.canSearch) updateRecent { it.adding(s.from!!, s.to!!) }
+        // The tour's example search is not kept, even if the app is closed during it.
+        if (s.canSearch && s.tour == null) updateRecent { it.adding(s.from!!, s.to!!) }
+        _state.update { it.copy(searchedFrom = if (s.arriveBy) null else s.time) }
         load(s.date, s.time.toSecondOfDay(), replace = true)
+    }
+
+    /** An hour earlier than the first result of the day searched, added above it. */
+    fun loadEarlier() {
+        val s = _state.value
+        val planner = (s.timetable as? TimetableState.Ready)?.planner ?: return
+        val from = s.from?.let(planner::resolveAll) ?: return
+        val to = s.to?.let(planner::resolveAll) ?: return
+        val query = lastQuery ?: return
+        val first = s.date.atTime(s.searchedFrom ?: return)
+        val start = maxOf(first.minusHours(1), s.date.atStartOfDay())
+        searchJob?.cancel()
+        _state.update { it.copy(isLoading = true) }
+        searchJob = viewModelScope.launch {
+            val seconds = java.time.Duration.between(s.date.atStartOfDay(), start).seconds.toInt()
+            val found = search(planner, from, to, s.date, seconds, arriveBy = false).filter { it.departure < first }
+            _state.update {
+                it.copy(
+                    isLoading = false,
+                    searchedFrom = start.toLocalTime(),
+                    itineraries = (found + it.itineraries).distinctBy { itinerary -> itinerary.id }.sortedBy { itinerary -> itinerary.departure },
+                )
+            }
+            applyRealtime(query)
+            loadResultsAlerts()
+        }
     }
 
     fun loadMoreDay() {

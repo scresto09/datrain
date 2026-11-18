@@ -179,7 +179,8 @@ private fun RowScope.Next(next: WidgetContent.Next, openArea: GlanceModifier) {
                 Text("  voie $it", style = TextStyle(color = WHITE, fontSize = 15.sp, fontWeight = FontWeight.Medium), maxLines = 1)
             }
         }
-        Text(next.route, style = TextStyle(color = SOFT, fontSize = 13.sp), maxLines = 1)
+        // Cancelled: the trains before and after it, in place of its route.
+        Text(next.alternatives ?: next.route, style = TextStyle(color = SOFT, fontSize = 13.sp), maxLines = 1)
     }
     val (label, color) = when (next.status) {
         WidgetStatus.ON_TIME -> "À l'heure" to PILL_NEUTRAL

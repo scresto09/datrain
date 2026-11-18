@@ -69,7 +69,11 @@ class DataModeTest {
         assertTrue(FavoriteWatch.needsAlerts(close, day.atTime(16, 0)))
     }
 
-    @Test fun `history saved before has no mode chosen yet`() {
-        assertNull(Json { ignoreUnknownKeys = true }.decodeFromString<RecentHistory>("{}").dataMode)
+    @Test fun `history saved before has no mode chosen yet, and the presentation still to see`() {
+        val saved = Json { ignoreUnknownKeys = true }.decodeFromString<RecentHistory>("{}")
+        assertNull(saved.dataMode)
+        assertFalse(saved.introSeen)
+        assertTrue(saved.tipsSeen.isEmpty())
+        assertEquals(setOf("star", "days"), saved.withTipSeen("star").withTipSeen("days").withTipSeen("star").tipsSeen)
     }
 }

@@ -49,11 +49,11 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
         private val running = Mutex()
 
         private suspend fun checkNow(context: Context, force: Boolean, fullFeed: Boolean) {
-            val history = RecentHistoryStore(context).load()
+            val historyStore = RecentHistoryStore(context)
+            val saved = historyStore.load()
             // The widget needs every favorite watched, even with notifications off; they then stay silent.
             val widget = DatrainWidget.isPlaced(context)
-            val favorites = history.favorites.filter { widget || (history.notifications && it.notify) }
-            if (favorites.isEmpty()) {
+            if (saved.favorites.none { widget || (saved.notifications && it.notify) }) {
                 DepartureAlarms.cancel(context)
                 return
             }
@@ -65,6 +65,15 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
 
             val store = FavoriteWatchStore(context)
             val now = LocalDateTime.now(PARIS)
+            // A temporary follow goes away after its run: the list, the widget and the alarms move on.
+            val history = saved.withoutFinishedFollows(planner, store.load(), now)
+            if (history != saved) historyStore.save(history)
+            val favorites = history.favorites.filter { widget || (history.notifications && it.notify) }
+            if (favorites.isEmpty()) {
+                DepartureAlarms.cancel(context)
+                DatrainWidget.refresh(context)
+                return
+            }
             // Kept two days: enough to never look twice for the same run.
             val lateChecked = store.lateChecked().filter { it.substringAfterLast('@') >= now.minusDays(1).toString() }.toSet()
             val policy = DataPolicy.current(context)
@@ -74,7 +83,11 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
                 favorites, { history.notifications && it.notify }, planner, store.load(), lateChecked, NetworkLiveSource(context), now, force, fullFeed,
                 policy.generous,
             )
-            result.notices.forEach { notify(context, it.train, it.departure, it.changes, it.opens) }
+            result.notices.forEach { notice ->
+                val replacing = cancelledRun(notice, history, result.states)
+                val alternatives = replacing?.let { (favorite, leaves) -> Alternatives.find(planner, favorite, leaves, null, now) }
+                notify(context, notice.train, notice.departure, notice.changes, notice.opens, alternatives, replacing?.second, now)
+            }
             store.save(result.states)
             store.saveLateChecked(result.lateChecked)
             DatrainWidget.refresh(context)
@@ -118,18 +131,56 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
             return (listOf(status) + state?.alerts.orEmpty()).joinToString("\n")
         }
 
-        /** [openKey]: the favorite the notification opens, a whole journey for one of its trains. */
+        /**
+         * For a cancellation not already replaced by a temporary follow: the favorite, and when its run was to
+         * leave, the first train of a journey.
+         */
+        private fun cancelledRun(notice: Notice, history: RecentHistory, states: Map<String, WatchState>): Pair<FavoriteTrain, LocalDateTime>? {
+            if (notice.changes.none { it == FavoriteChange.Cancelled || it is FavoriteChange.Removed }) return null
+            val favorite = history.favorites.firstOrNull { it.key == notice.opens } ?: return null
+            val removed = notice.changes.filterIsInstance<FavoriteChange.Removed>().firstOrNull()
+            val leaves = removed?.departure ?: states[FavoriteWatch.legKeys(favorite).first()]?.departureTime ?: notice.departure
+            if (TemporaryFollows.replacement(favorite, leaves.toLocalDate(), history.favorites) != null) return null
+            return favorite to leaves
+        }
+
+        /**
+         * [openKey]: the favorite the notification opens, a whole journey for one of its trains. For a
+         * cancellation, the trains before and after it, and a button for the others.
+         */
         private fun notify(
             context: Context,
             favorite: FavoriteTrain,
             departure: LocalDateTime,
             changes: List<FavoriteChange>,
             openKey: String = favorite.key,
+            alternatives: Alternatives? = null,
+            cancelledLeaves: LocalDateTime? = null,
+            now: LocalDateTime = LocalDateTime.now(PARIS),
         ) {
-            show(context, favorite, departure, changes.joinToString("\n", transform = ::describe), openKey)
+            val text = changes.joinToString("\n", transform = ::describe) +
+                alternatives?.takeUnless { it.isEmpty }?.let { "\n" + describe(it, now) }.orEmpty()
+            show(context, favorite, departure, text, openKey, cancelledLeaves)
         }
 
-        private fun show(context: Context, favorite: FavoriteTrain, departure: LocalDateTime?, text: String, openKey: String = favorite.key) {
+        /** "Plus tôt : 17:09 (dans 12 min) · Suivant : 18:40". */
+        internal fun describe(alternatives: Alternatives, now: LocalDateTime): String = listOfNotNull(
+            alternatives.before?.let {
+                val leaves = it.rides.first().trip.estimatedDeparture
+                val minutes = java.time.Duration.between(now, leaves).toMinutes()
+                "Plus tôt : ${leaves.format(CLOCK)}" + if (minutes in 0..59) " (dans $minutes min)" else ""
+            },
+            alternatives.after?.let { "Suivant : ${it.rides.first().trip.estimatedDeparture.format(CLOCK)}" },
+        ).joinToString(" · ")
+
+        private fun show(
+            context: Context,
+            favorite: FavoriteTrain,
+            departure: LocalDateTime?,
+            text: String,
+            openKey: String = favorite.key,
+            cancelledLeaves: LocalDateTime? = null,
+        ) {
             val manager = NotificationManagerCompat.from(context)
             if (!manager.areNotificationsEnabled()) return
             createChannel(context)
@@ -148,6 +199,20 @@ class FavoriteWatchWorker(context: Context, params: WorkerParameters) : Coroutin
                 .setContentIntent(pending)
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .apply {
+                    // The search between the same stations, from the train before it still possible.
+                    cancelledLeaves?.let { leaves ->
+                        val search = Intent(context, MainActivity::class.java)
+                            .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            .putExtra(MainActivity.EXTRA_ALTERNATIVES, openKey)
+                            .putExtra(MainActivity.EXTRA_LEAVES, leaves.toString())
+                        val action = PendingIntent.getActivity(
+                            context, "alternatives/$openKey".hashCode(), search,
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                        )
+                        addAction(0, "Autres trains", action)
+                    }
+                }
                 .build()
             try {
                 manager.notify("$openKey/${favorite.key}".hashCode(), notification)

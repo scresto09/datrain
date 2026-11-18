@@ -128,12 +128,22 @@ class FavoriteWatchTest {
         )
     }
 
+    @Test fun `alarms come every 15 minutes, then 10 from 1 h 40, then 5 from 40 minutes before`() {
+        val leaves = at(17, 40)
+        val alarms = generateSequence(at(14, 0)) { DepartureAlarms.nextAlarm(listOf(leaves), it) }.drop(1).toList()
+        assertEquals(
+            listOf("15:10", "15:25", "15:40", "15:55", "16:00", "16:10", "16:20", "16:30", "16:40", "16:50",
+                "17:00", "17:05", "17:10", "17:15", "17:20", "17:25", "17:30", "17:35", "17:40"),
+            alarms.map { it.toLocalTime().toString() },
+        )
+    }
+
     @Test fun `alarms follow the estimated departure, then the trip`() {
         val leaves = at(15, 20)
         assertEquals(at(15, 15), DepartureAlarms.nextAlarm(listOf(at(15), leaves), at(15, 12)))
         assertEquals(at(15, 20), DepartureAlarms.nextAlarm(listOf(at(15), leaves), at(15, 16)))
         val trip = listOf(leaves to at(16, 10))
-        assertEquals(at(15, 35), DepartureAlarms.nextAlarm(listOf(leaves), at(15, 22), trips = trip))
+        assertEquals(at(15, 30), DepartureAlarms.nextAlarm(listOf(leaves), at(15, 22), trips = trip))
         assertEquals(at(16, 11), DepartureAlarms.nextAlarm(listOf(leaves), at(16, 6), listOf(at(16, 10)), trip))
     }
 

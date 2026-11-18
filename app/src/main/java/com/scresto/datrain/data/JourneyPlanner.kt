@@ -159,6 +159,7 @@ class JourneyPlanner(val table: RailTimetable) {
      * one arrives, within [MAX_CHANGE_HOURS]; a journey already under way stays until its last train arrives.
      */
     fun nextJourney(favorite: FavoriteTrain, now: LocalDateTime): List<RideLeg>? {
+        favorite.run?.let { return temporaryRun(favorite, LocalDate.parse(it)) }
         var from = now
         repeat(DAYS_LOOKED_AHEAD) {
             val rides = nextJourneyAnyDay(favorite, from) ?: return null
@@ -166,6 +167,23 @@ class JourneyPlanner(val table: RailTimetable) {
             if (favorite.takenOn(leaves.dayOfWeek)) return rides
             // Past that day's runs, overnight ones included.
             from = maxOf(leaves.toLocalDate().plusDays(1).atStartOfDay(), rides.last().trip.arrival)
+        }
+        return null
+    }
+
+    /**
+     * A temporary follow's one run, whatever the time: it stays until it goes away, after its arrival.
+     * Null if the timetables have no run of it that day.
+     */
+    private fun temporaryRun(favorite: FavoriteTrain, day: LocalDate): List<RideLeg>? {
+        var from = day.atStartOfDay()
+        repeat(DAYS_LOOKED_AHEAD) {
+            val rides = nextJourneyAnyDay(favorite, from) ?: return null
+            val serviceDay = rides.first().trip.serviceDate
+            if (serviceDay == day) return rides
+            if (serviceDay > day) return null
+            // A run of the day before, still going after midnight.
+            from = rides.last().trip.arrival
         }
         return null
     }

@@ -37,6 +37,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -53,6 +54,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color as ComposeColor
@@ -110,6 +113,10 @@ fun TrainMapScreen(
     onDays: (() -> Unit)? = null,
     /** Taken on some days only: the icon then stands out. */
     daysRestricted: Boolean = false,
+    /** For a cancelled train: the search for the others between its stations. */
+    onAlternatives: (() -> Unit)? = null,
+    /** Until closed once: how to see all the stops. */
+    stopsTip: (() -> Unit)? = null,
     journey: List<Trip> = emptyList(),
     onSwitch: (Trip) -> Unit = {},
     vm: TrainMapViewModel = viewModel(),
@@ -160,6 +167,30 @@ fun TrainMapScreen(
         controller.frameRoute()
     }
     SideEffect { controller.onSelected = { selected = it } }
+
+    // The guided tour: the departure station selected on the map, then the stop list opened.
+    val tourTarget = LocalTourTarget.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    var mapOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    LaunchedEffect(tourTarget, state.route) {
+        when (tourTarget) {
+            TourTargets.STATION -> {
+                val stops = state.route?.stops.orEmpty()
+                val stop = stops.firstOrNull { it.uic == trip.fromKey && it.position != null } ?: stops.firstOrNull { it.position != null }
+                val position = stop?.position ?: return@LaunchedEffect
+                selected = stop.uic
+                controller.focus(position)
+                delay(900)
+                controller.screenPoint(position)?.let { point ->
+                    val radius = with(density) { 28.dp.toPx() }
+                    val x = mapOrigin.x + point.x
+                    val y = mapOrigin.y + point.y
+                    TourTargets.bounds[TourTargets.STATION] = androidx.compose.ui.geometry.Rect(x - radius, y - radius, x + radius, y + radius)
+                }
+            }
+            TourTargets.STOPS -> showStops = true
+        }
+    }
 
     val progress = (state.status as? TrainStatus.Live)?.progress
     val rows = remember(state.train, state.route, progress, trip) {
@@ -217,7 +248,9 @@ fun TrainMapScreen(
                     }
                 }
             }
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+            Box(
+                Modifier.weight(1f).fillMaxWidth().onGloballyPositioned { mapOrigin = it.boundsInRoot().topLeft },
+            ) {
                 TrainMap(
                     controller = controller,
                     route = state.route,
@@ -229,13 +262,15 @@ fun TrainMapScreen(
                 )
                 selected?.let { MapBubble(it, state, rows, trip, controller, changes) }
             }
-            Surface(tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
+            Surface(tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth().tourTarget(TourTargets.STOPS)) {
                 InfoPanel(
                     state, rows, StopRows.trainPosition(rows, progress), showStops, { showStops = it },
                     onTrainSelected = {
                         selected = SELECTED_TRAIN
                         state.position?.let(controller::focus)
                     },
+                    onAlternatives = onAlternatives,
+                    stopsTip = stopsTip,
                 ) { row ->
                     selected = row.uic
                     row.activeIndex?.let { state.route?.stops?.getOrNull(it)?.position }?.let(controller::focus)
@@ -285,7 +320,9 @@ private fun BoxScope.MapBubble(
                     (point.x.roundToInt() - size.width / 2).coerceIn(0, (parent.width - size.width).coerceAtLeast(0)),
                     y.coerceIn(0, (parent.height - size.height).coerceAtLeast(0)),
                 )
-            },
+            }
+            // After the offset: where the bubble really is, for the guided tour.
+            .onGloballyPositioned { TourTargets.bounds[TourTargets.STATION_INFO] = it.boundsInRoot() },
     ) {
         Column(
             Modifier
@@ -377,6 +414,8 @@ private fun InfoPanel(
     showStops: Boolean,
     onShowStops: (Boolean) -> Unit,
     onTrainSelected: () -> Unit,
+    onAlternatives: (() -> Unit)?,
+    stopsTip: (() -> Unit)?,
     onStopSelected: (StopRow) -> Unit,
 ) {
     val hasStops = rows.isNotEmpty()
@@ -390,6 +429,7 @@ private fun InfoPanel(
                 Modifier
                     .fillMaxWidth()
                     .height(24.dp)
+                    .tourTarget(TourTargets.PANEL)
                     .clickable { onShowStops(!showStops) }
                     .pointerInput(showStops) {
                         detectVerticalDragGestures { _, drag ->
@@ -406,13 +446,19 @@ private fun InfoPanel(
                 )
             }
         }
+        if (hasStops && !showStops) {
+            stopsTip?.let { Tip("Glissez le panneau vers le haut pour voir tous les arrêts.", onDismiss = it) }
+        }
         when (val status = state.status) {
             TrainStatus.Loading -> Text("Chargement de la position…")
             is TrainStatus.Failed -> Text(status.message, color = MaterialTheme.colorScheme.error)
             TrainStatus.NotTracked -> Text(
                 "Ce train n'est pas dans le suivi en direct pour l'instant, et son parcours prévu n'est pas connu.",
             )
-            TrainStatus.Cancelled -> Text("Train supprimé.", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+            TrainStatus.Cancelled -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Train supprimé.", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                onAlternatives?.let { OutlinedButton(onClick = it) { Text("Autres trains") } }
+            }
             TrainStatus.Stale -> Text("Données en direct indisponibles : position non affichée.", color = MaterialTheme.colorScheme.error)
             // The train's own lines: a tap shows it on the map, with its bubble.
             is TrainStatus.Live -> Column(
