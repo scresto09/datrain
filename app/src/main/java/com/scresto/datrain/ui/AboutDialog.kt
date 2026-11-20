@@ -88,6 +88,8 @@ internal fun AboutDialog(
     onIntro: () -> Unit,
     hasFavorites: Boolean,
     onDismiss: () -> Unit,
+    /** Null when the widget is placed already, or the launcher cannot place it. */
+    onAddWidget: (() -> Unit)? = null,
 ) {
     var stubHeight by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
@@ -157,6 +159,7 @@ internal fun AboutDialog(
                     HorizontalDivider()
                 }
                 val uriHandler = LocalUriHandler.current
+                onAddWidget?.let { AboutLink("Ajouter le widget", it) }
                 AboutLink("Revoir la visite guidée", onIntro)
                 AboutLink("Aide en ligne") { uriHandler.openUri(HELP_PAGE) }
                 AboutLink("Créé par Sylvain Cresto") { uriHandler.openUri(HOMEPAGE) }

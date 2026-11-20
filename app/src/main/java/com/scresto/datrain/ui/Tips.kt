@@ -50,4 +50,5 @@ internal object Tips {
     const val STOPS = "stops"
     const val ALTERNATIVE = "alternative"
     const val WIDGET = "widget"
+    const val WIDGET_OFFER = "widgetOffer"
 }

@@ -60,6 +60,8 @@ data class UiState(
     val trackedJourney: List<Trip> = emptyList(),
     /** Opened in place of a cancelled run: its star offers a temporary follow first. */
     val trackedAsAlternative: Boolean = false,
+    /** Key of the favorite the map was opened from: a change of its days moves the map to its next run. */
+    val trackedFavorite: String? = null,
     /** Start of the hours searched on the day asked: earlier trains are looked for before it. */
     val searchedFrom: LocalTime? = null,
     /** The step of the guided tour on screen, if any. */

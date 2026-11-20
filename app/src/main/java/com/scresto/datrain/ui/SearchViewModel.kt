@@ -98,7 +98,16 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
         it.copy(fromText = it.toText, toText = it.fromText, from = it.to, to = it.from)
     }
     fun track(trip: Trip?, journey: List<Trip> = emptyList()) =
-        _state.update { it.copy(trackedTrip = trip, trackedJourney = if (trip == null) emptyList() else journey, trackedAsAlternative = false) }
+        _state.update {
+            // Another train of the same journey keeps where the map was opened from.
+            val sameJourney = trip != null && journey.isNotEmpty() && journey == it.trackedJourney
+            it.copy(
+                trackedTrip = trip,
+                trackedJourney = if (trip == null) emptyList() else journey,
+                trackedAsAlternative = sameJourney && it.trackedAsAlternative,
+                trackedFavorite = it.trackedFavorite.takeIf { sameJourney },
+            )
+        }
 
     /** A train offered in place of a cancelled one: its map, whose star offers a temporary follow first. */
     fun openAlternative(itinerary: Itinerary) {
@@ -238,6 +247,21 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
         updateRecent { it.withFavoriteDays(train, days) }
         syncWatch()
         refreshFavorites()
+        reopenIfDayDropped(train.key)
+    }
+
+    /** The map opened from this favorite shows a day no longer followed: it moves to the next run kept. */
+    private fun reopenIfDayDropped(key: String) {
+        val state = _state.value
+        if (state.trackedFavorite != key) return
+        val favorite = state.recent.favorites.firstOrNull { it.key == key } ?: return
+        val day = (state.trackedJourney.firstOrNull() ?: state.trackedTrip)?.serviceDate ?: return
+        if (favorite.takenOn(day)) return
+        val planner = (state.timetable as? TimetableState.Ready)?.planner ?: return
+        viewModelScope.launch {
+            val rides = favoritesLoader.runToOpen(favorite, planner, LocalDateTime.now(PARIS)) ?: return@launch
+            if (_state.value.trackedFavorite == key) openRun(rides, key)
+        }
     }
 
     fun setFavoriteNotify(train: FavoriteTrain, notify: Boolean) {
@@ -263,15 +287,16 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
         val favorite = _state.value.recent.favorites.firstOrNull { it.key == key } ?: return
         viewModelScope.launch {
             val rides = favoritesLoader.runToOpen(favorite, planner, LocalDateTime.now(PARIS))
-            if (rides != null) openRun(rides)
+            if (rides != null) openRun(rides, favorite.key)
         }
     }
 
     /** A journey opens on its first train not yet arrived, with the others on the map. */
-    fun openRun(rides: List<RideLeg>) {
+    fun openRun(rides: List<RideLeg>, favoriteKey: String? = null) {
         val now = LocalDateTime.now(PARIS)
         val current = rides.firstOrNull { it.trip.estimatedArrival > now } ?: rides.last()
         trackRide(current, rides.map { it.trip })
+        _state.update { it.copy(trackedFavorite = favoriteKey) }
     }
 
     /** Next runs from the timetables first, then real time when one is soon. */

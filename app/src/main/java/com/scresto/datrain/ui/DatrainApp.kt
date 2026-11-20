@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -27,6 +28,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -134,6 +136,8 @@ fun DatrainApp(
         WidgetPin.isSupported(context) && !DatrainWidget.isPlaced(context)
     }
     var showAbout by rememberSaveable { mutableStateOf(false) }
+    // Offered once, right after a favorite is added: the widget then has a train to show.
+    var offerWidget by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     // The next runs change with time: they are read again when coming back to the app.
@@ -182,12 +186,37 @@ fun DatrainApp(
                 daysFor = null
                 if (adding) {
                     if (state.recent.notifications) askNotifications()
+                    offerWidget = Tips.WIDGET_OFFER !in state.recent.tipsSeen && state.tour == null &&
+                        WidgetPin.isSupported(context) && !DatrainWidget.isPlaced(context)
                     val day = (state.trackedJourney.firstOrNull() ?: state.trackedTrip)?.serviceDate
                     vm.addFavorite(if (temporary && day != null) train.copy(run = day.toString(), days = emptyList()) else train.copy(days = days))
                 } else {
                     vm.setFavoriteDays(train, days)
                 }
             }
+        }
+        if (offerWidget) {
+            AlertDialog(
+                onDismissRequest = {
+                    offerWidget = false
+                    vm.seeTip(Tips.WIDGET_OFFER)
+                },
+                text = { Text("Voir ce train sur l'écran d'accueil grâce au widget Datrain ?") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        offerWidget = false
+                        vm.seeTip(Tips.WIDGET_OFFER)
+                        vm.seeTip(Tips.WIDGET)
+                        scope.launch { WidgetPin.request(context) }
+                    }) { Text("Ajouter le widget") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        offerWidget = false
+                        vm.seeTip(Tips.WIDGET_OFFER)
+                    }) { Text("Plus tard") }
+                },
+            )
         }
         state.trackedTrip?.let { trip ->
             // Opened from a journey with changes, the star is the whole journey's.
@@ -235,6 +264,7 @@ fun DatrainApp(
         BackHandler(enabled = state.hasSearched, onBack = vm::clearResults)
         if (state.recent.dataMode == null) DataModeDialog(vm::setDataMode)
         if (showAbout) {
+            val canPin = remember { WidgetPin.isSupported(context) && !DatrainWidget.isPlaced(context) }
             AboutDialog(
                 notifications = state.recent.notifications,
                 onNotifications = { enabled ->
@@ -252,6 +282,7 @@ fun DatrainApp(
                     vm.sendTestNotification()
                 },
                 hasFavorites = state.recent.favorites.isNotEmpty(),
+                onAddWidget = if (canPin) { { scope.launch { WidgetPin.request(context) } } } else null,
                 onIntro = {
                     showAbout = false
                     vm.startTour()
@@ -335,7 +366,7 @@ fun DatrainApp(
                     items(state.favoriteRuns, key = { "fav-${it.favorite.key}" }) { run ->
                         FavoriteCard(
                             run = run,
-                            onOpen = { it.rides?.let(vm::openRun) },
+                            onOpen = { favoriteRun -> favoriteRun.rides?.let { vm.openRun(it, favoriteRun.favorite.key) } },
                             showBell = state.recent.notifications,
                             onBell = { vm.setFavoriteNotify(run.favorite, !run.favorite.notify) },
                             onDays = { daysFor = run.favorite to false },
